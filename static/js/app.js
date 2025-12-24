@@ -1,4 +1,4 @@
-// MIRA Web Interface - HTTP client
+// MIRA Web Interface - HTTP client -- RBC 123
 
 class MIRAClient {
     constructor() {

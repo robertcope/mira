@@ -19,27 +19,29 @@
                 <!-- Messages will be inserted here -->
             </div>
 
-            <div class="status-bar" id="statusBar">
-                <div class="status-left">
-                    <span class="tier-indicator" id="tierIndicator">balanced</span>
-                    <span class="domaindocs" id="domaindocs"></span>
+            <div class="chat-footer">
+                <div class="status-bar" id="statusBar">
+                    <div class="status-left">
+                        <span class="tier-indicator" id="tierIndicator">balanced</span>
+                        <span class="domaindocs" id="domaindocs"></span>
+                    </div>
+                    <div class="status-right">
+                        <span class="help-text">/help • ctrl+c quit</span>
+                    </div>
                 </div>
-                <div class="status-right">
-                    <span class="help-text">/help • ctrl+c quit</span>
-                </div>
-            </div>
 
-            <div class="input-container">
-                <div class="thinking-indicator" id="thinkingIndicator" style="display: none;">
-                    <div class="thinking-face">^_^</div>
-                </div>
-                <textarea
-                    id="messageInput"
-                    placeholder="Type your message... (Shift+Enter for new line, Enter to send)"
-                    rows="3"
-                ></textarea>
-                <div class="input-controls">
-                    <button id="sendButton" class="send-button">Send</button>
+                <div class="input-container">
+                    <div class="thinking-indicator" id="thinkingIndicator" style="display: none;">
+                        <div class="thinking-face">^_^</div>
+                    </div>
+                    <textarea
+                        id="messageInput"
+                        placeholder="Type your message... (Shift+Enter for new line, Enter to send)"
+                        rows="3"
+                    ></textarea>
+                    <div class="input-controls">
+                        <button id="sendButton" class="send-button">Send</button>
+                    </div>
                 </div>
             </div>
         </div>
