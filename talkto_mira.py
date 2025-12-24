@@ -31,6 +31,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
 from rich.text import Text
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
 
 from clients.vault_client import get_api_key
 
@@ -403,9 +405,15 @@ def chat_loop(token: str) -> None:
 
     render_screen(history, current_tier, enabled_docs=enabled_docs)
 
+    # Use prompt_toolkit for input with history and multiline support
+    # multiline=True enables word wrapping; users press Esc+Enter or Meta+Enter to submit
+    session = PromptSession(multiline=True, wrap_lines=True)
+
     while True:
         try:
-            user_input = console.input("[cyan]>[/cyan] ").strip()
+            # Note: prompt_toolkit doesn't directly support Rich's markup.
+            # We use its own styling. The default style includes 'cyan', so this works.
+            user_input = session.prompt(HTML('<cyan>&gt;</cyan> ')).strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Goodbye![/dim]")
             break

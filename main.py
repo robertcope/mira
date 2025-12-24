@@ -16,13 +16,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from config.config_manager import config
-from cns.api import data, actions, health, tool_config
+from cns.api import data, actions, health, tool_config, web_auth
 from cns.api import chat as chat_api
+from cns.api import websocket as websocket_api
 from api import federation as federation_api
 from cns.api.base import APIError, create_error_response, generate_request_id
 from utils.scheduler_service import scheduler_service
@@ -497,8 +499,18 @@ def create_app() -> FastAPI:
     app.include_router(actions.router, prefix="/v0/api", tags=["actions"])
     app.include_router(tool_config.router, prefix="/v0/api", tags=["tool_config"])
     app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
+    app.include_router(web_auth.router, prefix="/v0/api", tags=["auth"])
+    app.include_router(websocket_api.router, prefix="/v0", tags=["websocket"])
 
-    
+    # Serve static files for web interface
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+    # Root route serves web interface
+    @app.get("/")
+    async def root():
+        """Serve the web interface."""
+        return FileResponse("static/index.html")
+
     return app
 
 

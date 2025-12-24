@@ -83,3 +83,4 @@ playwright       # (optional) Headless browser - web_tool.py
 # == PACKAGES TO REVIEW/CONSIDER REMOVING ==
 # These packages have limited usage and may be removable:
 # - pytz (could potentially use zoneinfo from Python 3.9+ instead)
+prompt_toolkit   # Interactive CLI, history - talkto_mira.py

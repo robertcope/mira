@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIRA - Chat Interface</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="splash-screen" id="splashScreen">
+        <div class="splash-content">
+            <div class="ascii-animation" id="asciiAnimation"></div>
+        </div>
+    </div>
+
+    <div class="container" id="mainContainer" style="display: none;">
+        <div class="chat-container">
+            <div class="messages-container" id="messagesContainer">
+                <!-- Messages will be inserted here -->
+            </div>
+
+            <div class="status-bar" id="statusBar">
+                <div class="status-left">
+                    <span class="tier-indicator" id="tierIndicator">balanced</span>
+                    <span class="domaindocs" id="domaindocs"></span>
+                </div>
+                <div class="status-right">
+                    <span class="help-text">/help • ctrl+c quit</span>
+                </div>
+            </div>
+
+            <div class="input-container">
+                <div class="thinking-indicator" id="thinkingIndicator" style="display: none;">
+                    <div class="thinking-face">^_^</div>
+                </div>
+                <textarea
+                    id="messageInput"
+                    placeholder="Type your message... (Shift+Enter for new line, Enter to send)"
+                    rows="3"
+                ></textarea>
+                <div class="input-controls">
+                    <button id="sendButton" class="send-button">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
