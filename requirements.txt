@@ -48,7 +48,8 @@ mcp              # Model Context Protocol SDK - mcp_client.py for MCP server con
 # == TOOL-SPECIFIC LIBRARIES ==
 googlemaps       # Google Maps API - maps_tool.py
 kasa             # TP-Link Kasa smart devices - kasa_tool.py
-kagiapi          # Kagi search API - webaccess tools
+kagiapi          # Kagi search API - web_tool.py (primary search provider)
+ddgs             # DuckDuckGo search - web_tool.py (fallback search provider)
 hvac             # HashiCorp Vault client - vault_client.py
 
 # == IMAGE PROCESSING ==
