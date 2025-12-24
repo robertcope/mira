@@ -1,13 +1,12 @@
-// MIRA Web Interface - WebSocket client
+// MIRA Web Interface - HTTP client
 
 class MIRAClient {
     constructor() {
-        this.ws = null;
-        this.connected = false;
         this.messageHistory = [];
         this.apiKey = null;
         this.currentTier = 'balanced';
         this.enabledDocs = [];
+        this.processing = false;
 
         this.messagesContainer = document.getElementById('messagesContainer');
         this.messageInput = document.getElementById('messageInput');
@@ -23,20 +22,14 @@ class MIRAClient {
     }
 
     async init() {
-        // Show splash animation
-        //this.showSplash();
-
         console.log('Initializing MIRA client...');
 
-        // Fetch API key from server
         try {
             console.log('Checking server health...');
             const response = await fetch('/v0/api/health');
             const data = await response.json();
             console.log('Server health check:', data);
 
-            // In single-user mode, we'll use a simple auth approach
-            // For now, we'll retrieve the API key from the server via a dedicated endpoint
             console.log('Fetching API key...');
             this.apiKey = await this.fetchApiKey();
 
@@ -55,10 +48,6 @@ class MIRAClient {
             console.log('Hiding splash screen...');
             this.hideSplash();
 
-            // Connect WebSocket
-            console.log('Connecting WebSocket...');
-            this.connect();
-
             // Setup event listeners
             this.setupEventListeners();
 
@@ -75,8 +64,6 @@ class MIRAClient {
     }
 
     async fetchApiKey() {
-        // For single-user OSS mode, we'll add a simple endpoint to retrieve the API key
-        // This is stored in app.state.api_key during startup
         try {
             const response = await fetch('/v0/api/auth/key');
             if (!response.ok) {
@@ -129,89 +116,6 @@ class MIRAClient {
         }
     }
 
-    connect() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/v0/ws/chat`;
-
-        this.ws = new WebSocket(wsUrl);
-
-        this.ws.onopen = () => {
-            console.log('WebSocket connected');
-            this.connected = true;
-
-            // Authenticate with Bearer token
-            this.ws.send(JSON.stringify({
-                type: 'auth',
-                token: this.apiKey
-            }));
-        };
-
-        this.ws.onmessage = (event) => {
-            console.log('Raw WebSocket message:', event.data);
-            const data = JSON.parse(event.data);
-            console.log('Parsed data:', data);
-            this.handleMessage(data);
-        };
-
-        this.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            this.showError('Connection error');
-        };
-
-        this.ws.onclose = () => {
-            console.log('WebSocket closed');
-            this.connected = false;
-            this.showError('Connection closed. Refresh to reconnect.');
-        };
-    }
-
-    handleMessage(data) {
-        switch (data.type) {
-            case 'auth_success':
-                console.log('Authenticated successfully');
-                break;
-
-            case 'auth_failure':
-                this.showError('Authentication failed. Check your API key.');
-                break;
-
-            case 'text':
-                // Append text chunk to current assistant message
-                console.log('Text chunk received:', data.content, 'Type:', typeof data.content);
-                if (typeof data.content === 'string') {
-                    this.appendToLastMessage(data.content);
-                } else {
-                    console.error('Unexpected content type - expected string, got:', data.content);
-                    this.appendToLastMessage(JSON.stringify(data.content));
-                }
-                break;
-
-            case 'complete':
-                // Hide thinking indicator
-                this.hideThinking();
-
-                // Enable input
-                this.enableInput();
-
-                // Log metadata
-                console.log('Response complete:', data.metadata);
-                break;
-
-            case 'error':
-                this.showError(data.message);
-                this.hideThinking();
-                this.enableInput();
-                break;
-
-            case 'pong':
-                // Keepalive response
-                break;
-
-            default:
-                console.warn('Unknown message type:', data.type);
-        }
-    }
-
     setupEventListeners() {
         // Send button
         this.sendButton.addEventListener('click', () => this.sendMessage());
@@ -223,21 +127,14 @@ class MIRAClient {
                 this.sendMessage();
             }
         });
-
-        // Keepalive ping every 30 seconds
-        setInterval(() => {
-            if (this.connected) {
-                this.ws.send(JSON.stringify({ type: 'ping' }));
-            }
-        }, 30000);
     }
 
-    sendMessage() {
+    async sendMessage() {
         const content = this.messageInput.value.trim();
 
         if (!content) return;
-        if (!this.connected) {
-            this.showError('Not connected to server');
+        if (this.processing) {
+            this.showError('Please wait for current message to complete');
             return;
         }
 
@@ -256,18 +153,56 @@ class MIRAClient {
 
         // Disable input while processing
         this.disableInput();
+        this.processing = true;
 
         // Show thinking indicator
         this.showThinking();
 
         // Create new assistant message container
-        this.addMessage('assistant', '');
+        const assistantMessageDiv = this.addMessage('assistant', '');
 
-        // Send via WebSocket
-        this.ws.send(JSON.stringify({
-            type: 'message',
-            content: content
-        }));
+        try {
+            // Send via HTTP POST
+            const response = await fetch('/v0/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    message: content
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            if (!data.success) {
+                throw new Error(data.error?.message || 'Chat request failed');
+            }
+
+            // Display the complete response
+            assistantMessageDiv.textContent = data.data.response;
+
+            // Log metadata
+            console.log('Response metadata:', data.data.metadata);
+
+        } catch (error) {
+            console.error('Chat error:', error);
+            this.showError(error.message);
+            // Remove the empty assistant message on error
+            assistantMessageDiv.remove();
+        } finally {
+            // Hide thinking indicator
+            this.hideThinking();
+
+            // Enable input
+            this.enableInput();
+            this.processing = false;
+        }
     }
 
     handleSlashCommand(command) {
@@ -484,15 +419,6 @@ class MIRAClient {
         this.scrollToBottom();
 
         return messageDiv;
-    }
-
-    appendToLastMessage(content) {
-        const messages = this.messagesContainer.querySelectorAll('.message-assistant');
-        if (messages.length > 0) {
-            const lastMessage = messages[messages.length - 1];
-            lastMessage.textContent += content;
-            this.scrollToBottom();
-        }
     }
 
     showSystemMessage(content) {
