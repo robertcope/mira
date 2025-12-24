@@ -126,6 +126,39 @@ body {
     background: rgba(244, 67, 54, 0.1);
 }
 
+.message-history {
+    align-self: stretch;
+    border-color: var(--text-dim);
+    background: rgba(128, 128, 128, 0.05);
+    max-width: 100%;
+    padding: 8px 12px;
+}
+
+.history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.history-role {
+    color: var(--yellow);
+    font-weight: bold;
+}
+
+.history-timestamp {
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
+.history-content {
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+
 /* Status Bar */
 .status-bar {
     display: flex;

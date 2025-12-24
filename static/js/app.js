@@ -277,7 +277,7 @@ class MIRAClient {
 
         switch (cmd) {
             case 'help':
-                this.showSystemMessage('/tier [fast|balanced|nuanced]\n/clear\nquit, exit, bye');
+                this.showSystemMessage('/tier [fast|balanced|nuanced]\n/history [limit]\n/clear\nquit, exit, bye');
                 break;
 
             case 'tier':
@@ -290,6 +290,15 @@ class MIRAClient {
                     }
                 } else {
                     this.showSystemMessage(`Current tier: ${this.currentTier}\n\nOptions:\n  fast: Qwen3 • Fast\n  balanced: Kimi K2 • Balanced\n  nuanced: Opus • Nuanced`);
+                }
+                break;
+
+            case 'history':
+                const limit = args.length > 0 ? parseInt(args[0]) : 20;
+                if (isNaN(limit) || limit < 1 || limit > 100) {
+                    this.showError('Invalid limit. Use a number between 1 and 100.');
+                } else {
+                    this.showHistory(limit);
                 }
                 break;
 
@@ -334,6 +343,52 @@ class MIRAClient {
         } catch (error) {
             console.error('Set tier error:', error);
             this.showError('Failed to set tier');
+        }
+    }
+
+    async showHistory(limit = 20) {
+        try {
+            const response = await fetch(`/v0/api/data?type=history&limit=${limit}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`
+                }
+            });
+
+            if (!response.ok) {
+                this.showError('Failed to fetch history');
+                return;
+            }
+
+            const data = await response.json();
+            if (!data.success) {
+                this.showError('Failed to fetch history: ' + (data.error?.message || 'Unknown error'));
+                return;
+            }
+
+            const messages = data.data?.messages || [];
+            if (messages.length === 0) {
+                this.showSystemMessage('No history found.');
+                return;
+            }
+
+            // Display history header
+            this.showSystemMessage(`━━━ History (${messages.length} messages) ━━━`);
+
+            // Display messages
+            messages.forEach(msg => {
+                const timestamp = new Date(msg.created_at).toLocaleString();
+                const role = msg.role === 'user' ? 'You' : 'MIRA';
+                const preview = msg.content.substring(0, 150) + (msg.content.length > 150 ? '...' : '');
+
+                this.addHistoryMessage(role, preview, timestamp);
+            });
+
+            this.showSystemMessage(`━━━ End of History ━━━`);
+
+        } catch (error) {
+            console.error('Failed to fetch history:', error);
+            this.showError('Failed to fetch history: ' + error.message);
         }
     }
 
@@ -403,6 +458,27 @@ class MIRAClient {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message message-${role}`;
         messageDiv.textContent = content;
+
+        this.messagesContainer.appendChild(messageDiv);
+        this.scrollToBottom();
+
+        return messageDiv;
+    }
+
+    addHistoryMessage(role, content, timestamp) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message message-history';
+
+        const headerDiv = document.createElement('div');
+        headerDiv.className = 'history-header';
+        headerDiv.innerHTML = `<span class="history-role">${role}</span> <span class="history-timestamp">${timestamp}</span>`;
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'history-content';
+        contentDiv.textContent = content;
+
+        messageDiv.appendChild(headerDiv);
+        messageDiv.appendChild(contentDiv);
 
         this.messagesContainer.appendChild(messageDiv);
         this.scrollToBottom();
