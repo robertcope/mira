@@ -1639,6 +1639,7 @@ class LLMProvider:
 
         Converts Anthropic Message to message dict suitable for continuum history.
         Preserves thinking blocks when extended thinking is enabled.
+        Preserves reasoning_details for OpenRouter Gemini models (required for multi-turn).
 
         Args:
             message: Anthropic Message object
@@ -1668,10 +1669,16 @@ class LLMProvider:
                     "input": block.input
                 })
 
-        return {
+        assistant_msg = {
             "role": "assistant",
             "content": content_blocks
         }
+
+        # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+        if hasattr(message, 'reasoning_details') and message.reasoning_details:
+            assistant_msg["reasoning_details"] = message.reasoning_details
+
+        return assistant_msg
 
     def _handle_anthropic_error(self, error: anthropic.APIStatusError) -> Generator[StreamEvent, None, None]:
         """Handle Anthropic SDK errors and yield appropriate events."""

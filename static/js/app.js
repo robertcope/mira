@@ -212,19 +212,19 @@ class MIRAClient {
 
         switch (cmd) {
             case 'help':
-                this.showSystemMessage('/tier [fast|balanced|nuanced]\n/history [limit]\n/clear\nquit, exit, bye');
+                this.showSystemMessage('/tier [balanced|advanced|nuanced]\n/history [limit]\n/clear\nquit, exit, bye');
                 break;
 
             case 'tier':
                 if (args.length > 0) {
                     const tier = args[0].toLowerCase();
-                    if (['fast', 'balanced', 'nuanced'].includes(tier)) {
+                    if (['balanced', 'advanced', 'nuanced'].includes(tier)) {
                         this.setTier(tier);
                     } else {
-                        this.showError('Invalid tier. Options: fast, balanced, nuanced');
+                        this.showError('Invalid tier. Options: balanced, advanced, nuanced');
                     }
                 } else {
-                    this.showSystemMessage(`Current tier: ${this.currentTier}\n\nOptions:\n  fast: Qwen3 • Fast\n  balanced: Kimi K2 • Balanced\n  nuanced: Opus • Nuanced`);
+                    this.showSystemMessage(`Current tier: ${this.currentTier}\n\nOptions:\n  balanced: Gemini 3 Flash • Balanced\n  advanced: Gemini 3 Pro • Advanced\n  nuanced: Opus • Nuanced`);
                 }
                 break;
 
@@ -375,8 +375,8 @@ class MIRAClient {
 
     updateStatusBar() {
         const tierDescriptions = {
-            fast: 'Qwen3 • Fast',
-            balanced: 'Kimi K2 • Balanced',
+            balanced: 'Gemini 3 Flash • Balanced',
+            advanced: 'Gemini 3 Pro • Advanced',
             nuanced: 'Opus • Nuanced'
         };
 
