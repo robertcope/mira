@@ -435,14 +435,24 @@ class GenericOpenAIClient:
                         if block.get("type") == "text":
                             text_parts.append(block["text"])
                         elif block.get("type") == "tool_use":
-                            tool_calls.append({
+                            tool_call = {
                                 "id": block["id"],
                                 "type": "function",
                                 "function": {
                                     "name": block["name"],
                                     "arguments": json.dumps(block["input"])
                                 }
-                            })
+                            }
+                            # Preserve thought_signature for Gemini models (required for multi-turn)
+                            # If missing (old messages before fix), use bypass signature
+                            signature = block.get("thought_signature")
+                            if not signature:
+                                signature = "skip_thought_signature_validator"
+                                logger.warning(f"Tool call {block['id']} ({block['name']}) missing thought_signature, using bypass. Block keys: {list(block.keys())}")
+                            else:
+                                logger.debug(f"Tool call {block['id']} has thought_signature: {signature[:20]}...")
+                            tool_call["function"]["thought_signature"] = signature
+                            tool_calls.append(tool_call)
                         elif block.get("type") == "thinking":
                             # Skip thinking blocks (not supported in generic providers)
                             logger.debug("Skipping thinking block in generic OpenAI client")
@@ -550,7 +560,7 @@ class GenericOpenAIClient:
                 text=message["content"]
             ))
 
-        # Add tool calls (preserve IDs unchanged)
+        # Add tool calls (preserve IDs and thought_signature)
         if message.get("tool_calls"):
             for tc in message["tool_calls"]:
                 # OpenRouter omits 'arguments' entirely for no-parameter tools when proxying
@@ -561,12 +571,16 @@ class GenericOpenAIClient:
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse tool arguments: {arguments_str}")
                     arguments = {}
-                content_blocks.append(SimpleNamespace(
+                tool_block = SimpleNamespace(
                     type="tool_use",
                     id=tc["id"],
                     name=tc["function"]["name"],
                     input=arguments
-                ))
+                )
+                # Preserve thought_signature for Gemini models (required for multi-turn)
+                if tc["function"].get("thought_signature"):
+                    tool_block.thought_signature = tc["function"]["thought_signature"]
+                content_blocks.append(tool_block)
 
         # Map finish reason to Anthropic stop_reason
         stop_reason_map = {
