@@ -184,8 +184,11 @@ class MIRAClient {
                 throw new Error(data.error?.message || 'Chat request failed');
             }
 
+            // Strip internal emotion tags before display
+            const cleanResponse = this.stripEmotionTag(data.data.response);
+
             // Display the complete response
-            assistantMessageDiv.textContent = data.data.response;
+            assistantMessageDiv.textContent = cleanResponse;
 
             // Log metadata
             console.log('Response metadata:', data.data.metadata);
@@ -517,6 +520,11 @@ class MIRAClient {
             this.mainContainer.style.display = 'flex';
             this.messageInput.focus();
         }, 300);
+    }
+
+    stripEmotionTag(text) {
+        // Remove internal emotion tags like <mira:my_emotion>⏰</mira:my_emotion>
+        return text.replace(/\n?<mira:my_emotion>.*?<\/mira:my_emotion>/g, '');
     }
 
     sleep(ms) {
