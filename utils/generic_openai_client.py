@@ -76,7 +76,8 @@ class GenericOpenAIResponse:
     This is only used by LLMProvider when routing to third-party providers.
     """
 
-    def __init__(self, content: List, stop_reason: str, usage: Dict):
+    def __init__(self, content: List, stop_reason: str, usage: Dict,
+                 reasoning_details: Optional[List] = None):
         """
         Initialize response with Anthropic-compatible structure.
 
@@ -84,10 +85,12 @@ class GenericOpenAIResponse:
             content: List of content blocks (text, tool_use)
             stop_reason: Anthropic-style stop reason (end_turn, tool_use, max_tokens)
             usage: Token usage dictionary
+            reasoning_details: Raw reasoning_details from OpenRouter for round-tripping
         """
         self.content = content
         self.stop_reason = stop_reason
         self.usage = SimpleNamespace(**usage)
+        self.reasoning_details = reasoning_details
 
 
 class GenericOpenAIClient:
@@ -154,7 +157,10 @@ class GenericOpenAIClient:
         self.default_temperature = temperature
 
         # Create messages namespace to mimic anthropic.Anthropic interface
-        self.messages = SimpleNamespace(create=self._create_message)
+        self.messages = SimpleNamespace(
+            create=self._create_message,
+            create_streaming=self._create_message_streaming
+        )
 
         logger.info(f"GenericOpenAIClient initialized: {endpoint} / {model}")
 
@@ -223,9 +229,9 @@ class GenericOpenAIClient:
             payload["tools"] = openai_tools
             logger.debug(f"Converted {len(tools)} Anthropic tools to {len(openai_tools)} OpenAI tools")
 
-        # Add reasoning for providers that support it (OpenRouter, K2-Thinking)
+        # Add reasoning for providers that support it (OpenRouter/Gemini format)
         if thinking_enabled:
-            payload["reasoning"] = True
+            payload["reasoning"] = {"effort": "high"}
             logger.debug("Reasoning enabled for generic provider")
 
         # Make HTTP request
@@ -258,6 +264,94 @@ class GenericOpenAIClient:
         except Exception as e:
             logger.error(f"Generic OpenAI client error: {e}")
             raise RuntimeError(f"Generic OpenAI client error: {e}")
+
+    def _create_message_streaming(
+        self,
+        messages: List[Dict],
+        system: Optional[Any] = None,
+        tools: Optional[List[Dict]] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        thinking_enabled: bool = False,
+        thinking_budget: int = 1024,
+        **kwargs
+    ):
+        """
+        Stream a message using OpenAI-compatible endpoint with SSE.
+
+        Yields raw SSE chunks as dicts. Each chunk has structure:
+        {"choices": [{"delta": {"content": "...", "tool_calls": [...]}, "finish_reason": None}]}
+
+        Final chunk has finish_reason set ("stop" or "tool_calls").
+
+        Args:
+            messages: Anthropic-format messages
+            system: System prompt
+            tools: Anthropic-format tool definitions
+            max_tokens: Maximum tokens
+            temperature: Sampling temperature
+            thinking_enabled: Enable reasoning for compatible providers
+            thinking_budget: Token budget for thinking
+
+        Yields:
+            Dict chunks from SSE stream
+        """
+        from utils import http_client
+
+        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
+        temperature = temperature if temperature is not None else self.default_temperature
+
+        if thinking_enabled:
+            max_tokens = max_tokens + thinking_budget
+
+        # Build messages list
+        openai_messages = []
+        if system:
+            openai_messages.append(self._convert_system_prompt(system))
+        openai_messages.extend(self._convert_messages(messages))
+
+        # Build request payload with stream=True
+        payload = {
+            "model": self.model,
+            "messages": openai_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True
+        }
+
+        if tools:
+            openai_tools = self._convert_tools(tools)
+            payload["tools"] = openai_tools
+            logger.debug(f"Streaming with {len(tools)} tools")
+
+        if thinking_enabled:
+            payload["reasoning"] = {"effort": "high"}
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        logger.debug(f"Starting streaming request to {self.endpoint}")
+
+        with http_client.stream("POST", self.endpoint, json=payload, headers=headers, timeout=self.timeout) as response:
+            if response.status_code >= 400:
+                error_text = response.read().decode('utf-8')
+                logger.error(f"Streaming request failed: {response.status_code} - {error_text[:500]}")
+                response.raise_for_status()
+            for line in response.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line == "data: [DONE]":
+                    logger.debug("SSE stream complete")
+                    break
+                if line.startswith("data: "):
+                    try:
+                        chunk = json.loads(line[6:])  # Strip "data: " prefix
+                        yield chunk
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse SSE chunk: {line[:100]}")
+                        continue
 
     def _convert_system_prompt(self, system: Any) -> Dict:
         """
@@ -361,6 +455,9 @@ class GenericOpenAIClient:
                     msg_obj["content"] = "".join(text_parts)
                 if tool_calls:
                     msg_obj["tool_calls"] = tool_calls
+                # Preserve reasoning_details for round-trip (OpenRouter/Gemini requirement)
+                if msg.get("reasoning_details"):
+                    msg_obj["reasoning_details"] = msg["reasoning_details"]
 
                 openai_messages.append(msg_obj)
 
@@ -420,17 +517,31 @@ class GenericOpenAIClient:
 
         content_blocks = []
 
-        # Handle reasoning_details (OpenRouter/K2-Thinking format)
+        # Handle reasoning (OpenRouter format - may be string or in reasoning_details)
         # Add before text content to match Anthropic's thinking-first ordering
+        reasoning_text = None
         reasoning_details = openai_response.get("reasoning_details") or message.get("reasoning_details")
-        if reasoning_details:
-            reasoning_text = "\n".join(reasoning_details) if isinstance(reasoning_details, list) else str(reasoning_details)
+        if reasoning_details and isinstance(reasoning_details, list):
+            # Gemini format: list of dicts with type/text fields
+            text_parts = []
+            for item in reasoning_details:
+                if isinstance(item, dict) and item.get("type") == "reasoning.text" and item.get("text"):
+                    text_parts.append(item["text"])
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            if text_parts:
+                reasoning_text = "\n".join(text_parts)
+        elif message.get("reasoning") and isinstance(message["reasoning"], str):
+            # Simple string reasoning field
+            reasoning_text = message["reasoning"]
+
+        if reasoning_text:
             content_blocks.append(SimpleNamespace(
                 type="thinking",
                 thinking=reasoning_text,
                 signature=None  # Stub - not validated downstream
             ))
-            logger.debug(f"Parsed reasoning_details into thinking block ({len(reasoning_text)} chars)")
+            logger.debug(f"Parsed reasoning into thinking block ({len(reasoning_text)} chars)")
 
         # Add text content
         if message.get("content"):
@@ -442,11 +553,19 @@ class GenericOpenAIClient:
         # Add tool calls (preserve IDs unchanged)
         if message.get("tool_calls"):
             for tc in message["tool_calls"]:
+                # OpenRouter omits 'arguments' entirely for no-parameter tools when proxying
+                # Claude, instead of returning '{}' per OpenAI spec. Handle defensively.
+                arguments_str = tc["function"].get("arguments", "{}")
+                try:
+                    arguments = json.loads(arguments_str) if arguments_str else {}
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse tool arguments: {arguments_str}")
+                    arguments = {}
                 content_blocks.append(SimpleNamespace(
                     type="tool_use",
                     id=tc["id"],
                     name=tc["function"]["name"],
-                    input=json.loads(tc["function"]["arguments"])
+                    input=arguments
                 ))
 
         # Map finish reason to Anthropic stop_reason
@@ -466,7 +585,7 @@ class GenericOpenAIClient:
         }
 
         logger.debug(f"Generic OpenAI response: {len(content_blocks)} blocks, {stop_reason}")
-        return GenericOpenAIResponse(content_blocks, stop_reason, usage)
+        return GenericOpenAIResponse(content_blocks, stop_reason, usage, reasoning_details=reasoning_details)
 
     def _handle_http_error(self, error: requests.HTTPError, error_body: dict = None):
         """
@@ -489,7 +608,7 @@ class GenericOpenAIClient:
             error_code = error_info.get("code", "")
             error_message = error_info.get("message", "")
 
-            if "context_length" in error_code or "reduce the length" in error_message.lower():
+            if "context_length" in str(error_code) or "reduce the length" in error_message.lower():
                 logger.error("Generic OpenAI client context length exceeded")
                 raise ValueError(
                     "Content too large for model context window. "

@@ -330,44 +330,6 @@ class TestCachingBehavior:
         assert len(vault_client._secret_cache) > initial_cache_size
 
 
-class TestTokenRenewal:
-    """Test Vault token renewal functionality."""
-
-    def test_renew_token_succeeds(self):
-        """renew_token successfully renews Vault token."""
-        client = VaultClient()
-
-        # Renew token - should not raise exception
-        client.renew_token()
-
-        # Verify still authenticated after renewal
-        assert client.client.is_authenticated() is True
-
-    def test_register_jobs_accepts_scheduler_service_object(self):
-        """register_jobs can be called with a scheduler service object.
-
-        Note: We use a minimal test object here since the actual SchedulerService
-        isn't available in the test environment. We're verifying the registration
-        interface works, not the full scheduler integration.
-        """
-        client = VaultClient()
-
-        # Minimal test object that satisfies the register_jobs interface
-        class MinimalScheduler:
-            def register_job(self, job_id, func, trigger, component, description):
-                # Verify we're called with expected parameters
-                assert job_id == 'vault_token_renewal'
-                assert callable(func)
-                assert component == 'vault'
-                assert isinstance(description, str)
-                return True
-
-        scheduler = MinimalScheduler()
-
-        # Should complete without raising (returns None on success)
-        client.register_jobs(scheduler)  # Raises if registration fails
-
-
 class TestHealthCheck:
     """Test Vault connection health check functionality."""
 

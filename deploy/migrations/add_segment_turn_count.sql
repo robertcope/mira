@@ -1,1 +1,0 @@
-UPDATE messages SET metadata = metadata || '{"segment_turn_count": 1}'::jsonb WHERE metadata->>'is_segment_boundary' = 'true' AND metadata->>'status' = 'active' AND metadata->>'segment_turn_count' IS NULL;

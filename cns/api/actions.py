@@ -1533,18 +1533,31 @@ class ContinuumDomainHandler(BaseDomainHandler):
     def execute_action(self, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute LLM tier actions."""
         if action == "get_llm_tier":
-            from utils.user_context import get_user_preferences, get_accessible_tiers
+            from utils.user_context import get_user_preferences, get_account_tiers, get_accessible_tiers
 
             prefs = get_user_preferences()
+            all_tiers = get_account_tiers()
             accessible = get_accessible_tiers(prefs.max_tier)
+            accessible_names = {t.name for t in accessible}
+
+            # Return tiers with access info: accessible ones + locked ones with show_locked=true
+            tier_list = []
+            for tier in sorted(all_tiers.values(), key=lambda t: t.display_order):
+                is_accessible = tier.name in accessible_names
+                # Show tier if: accessible OR (not accessible but show_locked=true)
+                if is_accessible or tier.show_locked:
+                    tier_list.append({
+                        "name": tier.name,
+                        "description": tier.description,
+                        "accessible": is_accessible,
+                        "locked_message": tier.locked_message if not is_accessible else None
+                    })
+
             return {
                 "success": True,
                 "tier": prefs.llm_tier,
                 "max_tier": prefs.max_tier,
-                "available_tiers": [
-                    {"name": t.name, "description": t.description}
-                    for t in accessible
-                ]
+                "available_tiers": tier_list
             }
 
         elif action == "set_llm_tier":

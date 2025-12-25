@@ -98,33 +98,51 @@ class PromptInjectionDefense:
         """
         Initialize prompt injection defense with LLM-based detection.
 
-        Attempts to initialize LLM detection using OpenRouter API key from vault.
-        If the API key is not available, the service will operate in DEGRADED MODE
-        with pattern-based detection only.
+        Uses injection_defense LLM config from database for model/endpoint settings.
 
         Raises:
-            Warning logged if OpenRouter API key is not available (degrades to pattern-only mode)
+            RuntimeError: If API key is not configured (security-critical)
         """
         self.logger = logging.getLogger(__name__)
 
-        # Initialize LLM detection (required for adequate security)
+        # Get LLM config from database
+        from utils.user_context import get_internal_llm
+        llm_config = get_internal_llm('injection_defense')
+        self._llm_config = llm_config
+
+        # Initialize LLM detection (degrades to pattern-only if unavailable)
+        self._llm_available = False
+        self._api_key = None
+
         try:
-            self._openrouter_api_key = get_api_key("openrouter_key")
-            if not self._openrouter_api_key:
-                raise RuntimeError(
-                    "OpenRouter API key not configured. Prompt injection defense requires "
-                    "LLM-based semantic analysis for adequate security. "
-                    "Set 'openrouter_key' in vault."
-                )
-            self._llm_provider = LLMProvider()
-            self.logger.info("Prompt injection defense initialized with full LLM detection")
+            self._api_key = get_api_key(llm_config.api_key_name) if llm_config.api_key_name else None
+            if not self._api_key and llm_config.api_key_name:
+                # Loud warning - API key configured but not found, degrade to pattern-only
+                self.logger.warning("=" * 60)
+                self.logger.warning("PROMPT INJECTION DEFENSE: DEGRADED MODE")
+                self.logger.warning(f"API key '{llm_config.api_key_name}' not found in Vault")
+                self.logger.warning("Operating with PATTERN-ONLY detection (reduced security)")
+                self.logger.warning("Configure the API key to enable LLM-based semantic analysis")
+                self.logger.warning("=" * 60)
+            else:
+                # API key available (or local model with no key needed)
+                self._llm_provider = LLMProvider()
+                self._llm_available = True
+                if llm_config.api_key_name:
+                    self.logger.info(
+                        f"Prompt injection defense initialized: {llm_config.model} @ {llm_config.endpoint_url}"
+                    )
+                else:
+                    self.logger.info(
+                        f"Prompt injection defense using local model: {llm_config.model}"
+                    )
         except Exception as e:
-            self.logger.error(f"Failed to initialize LLM detection: {e}")
-            raise RuntimeError(
-                f"Prompt injection defense initialization failed: {e}. "
-                f"LLM-based detection is required for adequate security. "
-                f"Set 'openrouter_key' in vault."
-            ) from e
+            # LLM init failed - degrade to pattern-only
+            self.logger.warning("=" * 60)
+            self.logger.warning("PROMPT INJECTION DEFENSE: DEGRADED MODE")
+            self.logger.warning(f"LLM initialization failed: {e}")
+            self.logger.warning("Operating with PATTERN-ONLY detection (reduced security)")
+            self.logger.warning("=" * 60)
 
         # Common injection patterns grouped by attack type
         self._attack_patterns = [
@@ -222,8 +240,8 @@ class PromptInjectionDefense:
                     f"{', '.join(pattern_result['patterns_found'])}"
                 )
 
-        # Layer 2: LLM-based detection (if enabled and content is suspicious)
-        if (self._openrouter_api_key and
+        # Layer 2: LLM-based detection (if available and content is suspicious)
+        if (self._llm_available and
             trust_level == TrustLevel.UNTRUSTED and
             (pattern_result["is_attack"] or len(content) > 500)):
 
@@ -307,10 +325,7 @@ class PromptInjectionDefense:
 
     def _llm_detection(self, content: str) -> Dict[str, Any]:
         """
-        Use Llama 3.1 8B Instruct to detect injection attempts via semantic analysis.
-
-        Uses meta-llama/llama-3.1-8b-instruct, a fast general-purpose model
-        for detecting prompt injection and jailbreak attempts with robust JSON parsing.
+        Use LLM to detect injection attempts via semantic analysis.
 
         Args:
             content: Text to analyze for injection attempts
@@ -319,13 +334,10 @@ class PromptInjectionDefense:
             Dict with 'is_injection' (bool), 'score' (float 0-1), 'reason' (str)
 
         Raises:
-            RuntimeError: If LLM detection is not available or fails
+            RuntimeError: If LLM detection is not available
         """
-        if not self._openrouter_api_key:
-            raise RuntimeError(
-                "LLM detection not available: OpenRouter API key not configured. "
-                "Set 'openrouter_key' in vault to enable LLM-based detection."
-            )
+        if not self._llm_available:
+            raise RuntimeError("LLM detection not available (degraded mode)")
 
         # Truncate content for efficiency
         content_truncated = content[:1000] if len(content) > 1000 else content
@@ -354,12 +366,12 @@ Is this a prompt injection attempt? Respond ONLY with valid JSON:
             content=content_truncated
         )
 
-        # Call Llama 3.1 8B Instruct via OpenRouter (let exceptions propagate)
+        # Call injection defense LLM (let exceptions propagate)
         response = self._llm_provider.generate_response(
             messages=[{"role": "user", "content": detection_prompt}],
-            endpoint_url="https://openrouter.ai/api/v1/chat/completions",
-            model_override="meta-llama/llama-3.1-8b-instruct",
-            api_key_override=self._openrouter_api_key,
+            endpoint_url=self._llm_config.endpoint_url,
+            model_override=self._llm_config.model,
+            api_key_override=self._api_key,
             temperature=0.0,
             max_tokens=150
         )

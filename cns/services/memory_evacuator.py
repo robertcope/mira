@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Set
 
-from config.config import ProactiveConfig, ApiConfig
+from config.config import ProactiveConfig
 from cns.core.continuum import Continuum
 from clients.vault_client import get_api_key
 
@@ -29,7 +29,6 @@ class MemoryEvacuator:
     def __init__(
         self,
         proactive_config: ProactiveConfig,
-        api_config: ApiConfig,
         llm_provider
     ):
         """
@@ -37,7 +36,6 @@ class MemoryEvacuator:
 
         Args:
             proactive_config: Proactive config with evacuation thresholds
-            api_config: API config for LLM endpoint/model (reuses fingerprint settings)
             llm_provider: LLM provider for evacuation calls
 
         Raises:
@@ -45,7 +43,6 @@ class MemoryEvacuator:
             ValueError: If API key not found in Vault
         """
         self.config = proactive_config
-        self.api_config = api_config
         self.llm_provider = llm_provider
 
         # Load prompt templates
@@ -68,12 +65,17 @@ class MemoryEvacuator:
         with open(user_prompt_path, 'r') as f:
             self.user_prompt_template = f.read()
 
+        # Get LLM config from database
+        from utils.user_context import get_internal_llm
+        llm_config = get_internal_llm('analysis')
+        self._llm_config = llm_config
+
         # Get API key for LLM endpoint (None for local providers like Ollama)
-        if api_config.analysis_api_key_name:
-            self.api_key = get_api_key(api_config.analysis_api_key_name)
+        if llm_config.api_key_name:
+            self.api_key = get_api_key(llm_config.api_key_name)
             if not self.api_key:
                 raise ValueError(
-                    f"API key '{api_config.analysis_api_key_name}' not found in Vault"
+                    f"API key '{llm_config.api_key_name}' not found in Vault"
                 )
         else:
             self.api_key = None  # Local provider (Ollama) - no API key needed
@@ -158,8 +160,8 @@ class MemoryEvacuator:
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": user_content}],
                 stream=False,
-                endpoint_url=self.api_config.analysis_endpoint,
-                model_override=self.api_config.analysis_model,
+                endpoint_url=self._llm_config.endpoint_url,
+                model_override=self._llm_config.model,
                 api_key_override=self.api_key,
                 system_override=system_prompt
             )

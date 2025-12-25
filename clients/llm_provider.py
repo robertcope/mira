@@ -122,7 +122,7 @@ class GenericProviderClient:
         self,
         api_key: str,
         model: str,
-        api_endpoint: str = "https://api.openai.com/v1/chat/completions",
+        api_endpoint: str,
         temperature: float = 0.1,
         max_tokens: int = 1000,
         timeout: int = 60
@@ -221,8 +221,6 @@ class LLMProvider:
 
         # Apply configuration with overrides
         self.model = model if model is not None else config.api.model  # Reasoning model
-        self.execution_model = config.api.execution_model  # Fast model for simple tools
-        self.execution_endpoint = config.api.execution_endpoint  # OpenRouter endpoint for execution model
         self.simple_tools = set(config.api.simple_tools)  # Convert to set for fast lookup
         self.max_tokens = max_tokens if max_tokens is not None else config.api.max_tokens
         self.temperature = temperature if temperature is not None else config.api.temperature
@@ -230,13 +228,19 @@ class LLMProvider:
         self.api_key = api_key if api_key is not None else config.api_key
         self.enable_prompt_caching = enable_prompt_caching
 
+        # Get execution model config from database
+        from utils.user_context import get_internal_llm
+        execution_config = get_internal_llm('execution')
+        self.execution_model = execution_config.model
+        self.execution_endpoint = execution_config.endpoint_url
+
         # Get execution model API key from Vault (None for local providers like Ollama)
-        if config.api.execution_api_key_name:
+        if execution_config.api_key_name:
             try:
                 from clients.vault_client import get_api_key
-                self.execution_api_key = get_api_key(config.api.execution_api_key_name)
+                self.execution_api_key = get_api_key(execution_config.api_key_name)
                 if not self.execution_api_key:
-                    self.logger.warning(f"Execution model API key '{config.api.execution_api_key_name}' not found in Vault - execution model disabled")
+                    self.logger.warning(f"Execution model API key '{execution_config.api_key_name}' not found in Vault - execution model disabled")
             except Exception as e:
                 self.logger.error(f"Failed to get execution model API key: {e}")
                 self.execution_api_key = None
@@ -277,8 +281,8 @@ class LLMProvider:
         # Optional tool repository for tool execution
         self.tool_repo = tool_repo
 
-        # Check for firehose mode
-        self.firehose_enabled = getattr(config.system, '_firehose_enabled', False)
+        # Check for firehose mode (env var: MIRA_FIREHOSE=1)
+        self.firehose_enabled = bool(os.environ.get('MIRA_FIREHOSE'))
 
         self.logger.info(f"LLM Provider initialized with Anthropic SDK")
         self.logger.info(f"Reasoning model: {self.model}")
@@ -434,14 +438,28 @@ class LLMProvider:
                 stripped.append(msg)
         return stripped
 
-    def _write_firehose(self, system_prompt: str, messages: List[Dict], tools: Optional[List[Dict]]) -> None:
-        """Write request data to firehose_output.json for debugging."""
+    def _write_firehose(
+        self,
+        system_prompt: str,
+        messages: List[Dict],
+        tools: Optional[List[Dict]],
+        provider: str = "anthropic",
+        endpoint: Optional[str] = None,
+        model_override: Optional[str] = None
+    ) -> None:
+        """Write request data to firehose_output.json for debugging.
+
+        Captures all LLM requests (Anthropic and generic providers) when
+        MIRA_FIREHOSE=1 environment variable is set.
+        """
         if not self.firehose_enabled:
             return
 
         firehose_data = {
             "timestamp": time.time(),
-            "model": self.model,
+            "provider": provider,
+            "endpoint": endpoint or "api.anthropic.com",
+            "model": model_override or self.model,
             "system_prompt": system_prompt,
             "messages": messages,
             "tools": tools,
@@ -452,9 +470,9 @@ class LLMProvider:
         try:
             with open("firehose_output.json", "w") as f:
                 json.dump(firehose_data, f, indent=2)
-            self.logger.debug("Wrote request data to firehose_output.json")
+            self.logger.debug(f"Wrote {provider} request to firehose_output.json")
         except Exception as e:
-            self.logger.error(f"Failed to write firehose output: {e}")
+            self.logger.error(f"Failed to write firehose: {e}")
 
     def _prepare_tools_for_caching(self, tools: List[Dict]) -> List[Dict]:
         """
@@ -669,21 +687,147 @@ class LLMProvider:
             endpoint_url = kwargs.get('endpoint_url')
             model_override = kwargs.get('model_override')
             if endpoint_url:
-                # Agentic loop for generic providers - keep calling until no tool_calls
+                # Agentic loop for generic providers with real-time streaming
                 current_messages = list(messages)  # Copy to avoid mutating original
+                circuit_breaker = CircuitBreaker()
+                last_generic_response = None
+
+                # Import streaming dependencies
+                from utils.generic_openai_client import GenericOpenAIClient, GenericOpenAIResponse
+                from types import SimpleNamespace
 
                 while True:
-                    response = self._generate_non_streaming(current_messages, tools, **kwargs)
+                    # Select endpoint/model for this iteration based on previous response
+                    current_endpoint = endpoint_url
+                    current_model = model_override
+                    current_api_key = kwargs.get('api_key_override')
 
-                    # Emit text content as TextEvent
-                    text = self.extract_text_content(response)
-                    if text:
-                        yield TextEvent(content=text)
+                    if last_generic_response and self.execution_api_key:
+                        tool_names = {b.name for b in last_generic_response.content if b.type == "tool_use"}
+                        if tool_names and tool_names.issubset(self.simple_tools):
+                            self.logger.debug(f"Generic: using execution model for simple tools: {tool_names}")
+                            current_endpoint = self.execution_endpoint
+                            current_model = self.execution_model
+                            current_api_key = self.execution_api_key
 
-                    # Emit thinking if present
-                    for block in response.content:
-                        if block.type == "thinking":
-                            yield ThinkingEvent(content=block.thinking)
+                    # Prepare for streaming
+                    system_prompt, prepared_messages = self._prepare_messages(current_messages)
+
+                    # Strip unsupported features from tools
+                    generic_tools = None
+                    if tools:
+                        filtered_tools = [t for t in tools if t.get("type") != "code_execution_20250825"]
+                        generic_tools = [{k: v for k, v in t.items() if k != "cache_control"} for t in filtered_tools]
+
+                    # Create generic client for streaming
+                    temperature = kwargs.get('temperature', self.temperature)
+                    generic_client = GenericOpenAIClient(
+                        endpoint=current_endpoint,
+                        model=current_model,
+                        api_key=current_api_key,
+                        timeout=self.timeout,
+                        max_tokens=self.max_tokens,
+                        temperature=temperature
+                    )
+
+                    use_thinking = kwargs.get('thinking_enabled', False)
+                    thinking_budget = kwargs.get('thinking_budget', self.extended_thinking_budget)
+
+                    # Write to firehose before streaming
+                    self._write_firehose(
+                        system_prompt=system_prompt,
+                        messages=prepared_messages,
+                        tools=generic_tools,
+                        provider="generic",
+                        endpoint=current_endpoint,
+                        model_override=current_model
+                    )
+
+                    # Stream response with real-time event emission
+                    accumulated_text = ""
+                    accumulated_tool_calls = {}  # {index: {"id": ..., "name": ..., "arguments": ""}}
+                    finish_reason = None
+
+                    for chunk in generic_client.messages.create_streaming(
+                        messages=prepared_messages,
+                        system=system_prompt,
+                        tools=generic_tools,
+                        max_tokens=self.max_tokens,
+                        temperature=temperature,
+                        thinking_enabled=use_thinking,
+                        thinking_budget=thinking_budget
+                    ):
+                        if not chunk.get("choices"):
+                            continue
+
+                        choice = chunk["choices"][0]
+                        delta = choice.get("delta", {})
+                        finish_reason = choice.get("finish_reason") or finish_reason
+
+                        # Stream text content in real-time
+                        if delta.get("content"):
+                            yield TextEvent(content=delta["content"])
+                            accumulated_text += delta["content"]
+
+                        # Handle tool calls - accumulate arguments across chunks
+                        if delta.get("tool_calls"):
+                            for tc in delta["tool_calls"]:
+                                idx = tc["index"]
+                                if idx not in accumulated_tool_calls:
+                                    # New tool call - initialize and emit ToolDetectedEvent
+                                    accumulated_tool_calls[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "name": tc.get("function", {}).get("name", ""),
+                                        "arguments": ""
+                                    }
+                                    if accumulated_tool_calls[idx]["name"]:
+                                        yield ToolDetectedEvent(
+                                            tool_name=accumulated_tool_calls[idx]["name"],
+                                            tool_id=accumulated_tool_calls[idx]["id"]
+                                        )
+                                else:
+                                    # Update existing tool call ID/name if provided
+                                    if tc.get("id"):
+                                        accumulated_tool_calls[idx]["id"] = tc["id"]
+                                    if tc.get("function", {}).get("name"):
+                                        accumulated_tool_calls[idx]["name"] = tc["function"]["name"]
+
+                                # Accumulate arguments
+                                args_delta = tc.get("function", {}).get("arguments", "")
+                                accumulated_tool_calls[idx]["arguments"] += args_delta
+
+                    # Build GenericOpenAIResponse from accumulated data
+                    content_blocks = []
+
+                    # Add text block if present
+                    if accumulated_text:
+                        content_blocks.append(SimpleNamespace(type="text", text=accumulated_text))
+
+                    # Add tool_use blocks - parse accumulated JSON arguments
+                    for idx in sorted(accumulated_tool_calls.keys()):
+                        tc = accumulated_tool_calls[idx]
+                        try:
+                            arguments = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                        except json.JSONDecodeError:
+                            self.logger.warning(f"Failed to parse tool arguments: {tc['arguments'][:100]}")
+                            arguments = {}
+                        content_blocks.append(SimpleNamespace(
+                            type="tool_use",
+                            id=tc["id"],
+                            name=tc["name"],
+                            input=arguments
+                        ))
+
+                    # Map finish reason to Anthropic stop_reason
+                    stop_reason_map = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
+                    stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+
+                    response = GenericOpenAIResponse(
+                        content=content_blocks,
+                        stop_reason=stop_reason,
+                        usage={"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+                    )
+                    last_generic_response = response
 
                     # Check for tool_use blocks
                     tool_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -693,8 +837,16 @@ class LLMProvider:
                         yield CompleteEvent(response=response)
                         return
 
-                    # Execute tools and build messages for next iteration
-                    tool_results = []
+                    # Execute tools in parallel (matches Anthropic path pattern)
+                    from utils.user_context import _user_context
+                    user_context_value = _user_context.get()
+
+                    def invoke_with_context(tool_name: str, tool_input: dict):
+                        """Wrapper that propagates user context to worker thread."""
+                        _user_context.set(user_context_value)
+                        return self.tool_repo.invoke_tool(tool_name, tool_input)
+
+                    # Emit executing events for all tools immediately
                     for block in tool_blocks:
                         yield ToolExecutingEvent(
                             tool_name=block.name,
@@ -702,25 +854,43 @@ class LLMProvider:
                             arguments=block.input
                         )
 
-                        if self.tool_repo:
+                    # Execute tools concurrently
+                    tool_results = []
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future_to_block = {
+                            executor.submit(invoke_with_context, block.name, block.input): block
+                            for block in tool_blocks
+                        }
+
+                        for future in concurrent.futures.as_completed(future_to_block):
+                            block = future_to_block[future]
+                            error = None
                             try:
-                                result = self.tool_repo.invoke_tool(block.name, block.input)
+                                result = future.result()
                                 result_str = json.dumps(result) if isinstance(result, dict) else str(result)
-                                yield ToolCompletedEvent(tool_name=block.name, tool_id=block.id, result=result_str)
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": result_str
-                                })
+                                yield ToolCompletedEvent(
+                                    tool_name=block.name,
+                                    tool_id=block.id,
+                                    result=result_str
+                                )
                             except Exception as e:
                                 self.logger.error(f"Tool execution failed for {block.name}: {e}")
-                                yield ToolErrorEvent(tool_name=block.name, tool_id=block.id, error=str(e))
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": f"Error: {e}",
-                                    "is_error": True
-                                })
+                                result_str = f"Error: {e}"
+                                result = None
+                                error = e
+                                yield ToolErrorEvent(
+                                    tool_name=block.name,
+                                    tool_id=block.id,
+                                    error=str(e)
+                                )
+
+                            circuit_breaker.record_execution(block.name, result if not error else None, error)
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result_str,
+                                **({"is_error": True} if error else {})
+                            })
 
                     # Build assistant message with tool_use blocks (Anthropic format)
                     assistant_content = []
@@ -735,8 +905,29 @@ class LLMProvider:
                                 "input": block.input
                             })
 
-                    current_messages.append({"role": "assistant", "content": assistant_content})
+                    assistant_msg = {"role": "assistant", "content": assistant_content}
+                    # Preserve reasoning_details for round-trip (required by OpenRouter reasoning models)
+                    if hasattr(response, 'reasoning_details') and response.reasoning_details:
+                        assistant_msg["reasoning_details"] = response.reasoning_details
+                    current_messages.append(assistant_msg)
                     current_messages.append({"role": "user", "content": tool_results})
+
+                    # Check circuit breaker before continuing loop
+                    should_continue, reason = circuit_breaker.should_continue()
+                    if not should_continue:
+                        self.logger.info(f"Circuit breaker triggered: {reason}")
+                        yield CircuitBreakerEvent(reason=reason)
+
+                        # Add instruction to respond without more tools
+                        current_messages[-1]["content"].append({
+                            "type": "text",
+                            "text": f"[Automated system message: Tool call issue detected - {reason}. No more tool calls available. Provide your response to the user based on information gathered so far.]"
+                        })
+
+                        # Force final response without tools
+                        response = self._generate_non_streaming(current_messages, None, **kwargs)
+                        yield CompleteEvent(response=response)
+                        return
                     # Loop continues - call API again with tool results
 
             # Route to appropriate handler (Anthropic streaming)
@@ -823,6 +1014,16 @@ class LLMProvider:
                 # Forward thinking params to generic client
                 use_thinking = kwargs.get('thinking_enabled', False)
                 thinking_budget = kwargs.get('thinking_budget', self.extended_thinking_budget)
+
+                # Write to firehose before generic provider call
+                self._write_firehose(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    tools=generic_tools,
+                    provider="generic",
+                    endpoint=endpoint_url,
+                    model_override=model_override
+                )
 
                 # Call generic client - handle tool validation errors with auto-load
                 try:
@@ -962,6 +1163,9 @@ class LLMProvider:
                 api_params["container"] = container_id
                 self.logger.debug(f"Reusing container: {container_id}")
 
+            # Write to firehose before Anthropic API call
+            self._write_firehose(system_prompt, anthropic_messages, anthropic_tools, provider="anthropic")
+
             # Use beta API for code execution and Files API
             message = self.anthropic_client.beta.messages.create(
                 **api_params,
@@ -1077,7 +1281,7 @@ class LLMProvider:
         anthropic_tools = self._prepare_tools_for_caching(tools) if tools else None
 
         # Write to firehose if enabled
-        self._write_firehose(system_prompt, anthropic_messages, anthropic_tools)
+        self._write_firehose(system_prompt, anthropic_messages, anthropic_tools, provider="anthropic")
 
         # Build system parameter based on content type
         if isinstance(system_prompt, list):
@@ -1260,10 +1464,8 @@ class LLMProvider:
                 selected_model = self._select_model(last_response)
 
             # Stream LLM response with selected model
-            # Remove model_override from kwargs to avoid duplicate argument
-            stream_kwargs = {k: v for k, v in kwargs.items() if k != 'model_override'}
             response = None
-            for event in self._stream_response(current_messages, tools, model_override=selected_model, **stream_kwargs):
+            for event in self._stream_response(current_messages, tools, **{**kwargs, 'model_override': selected_model}):
                 if isinstance(event, CompleteEvent):
                     response = event.response
                 else:

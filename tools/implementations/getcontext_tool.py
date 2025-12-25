@@ -67,6 +67,19 @@ class GetContextToolConfig(BaseModel):
         le=10,
         description="Maximum results per web search"
     )
+    # LLM config for search agent (self-contained - not database-backed)
+    llm_model: str = Field(
+        default="openai/gpt-oss-20b",
+        description="Model for search agent"
+    )
+    llm_endpoint: str = Field(
+        default="https://api.groq.com/openai/v1/chat/completions",
+        description="LLM endpoint"
+    )
+    llm_api_key_name: Optional[str] = Field(
+        default="provider_key",
+        description="Vault key name for API key"
+    )
 
 
 # Register configuration
@@ -101,21 +114,20 @@ Be systematic and thorough."""
         self.logger = logging.getLogger(__name__)
 
     def _get_llm_client(self):
-        """Get LLM client using execution model from config."""
-        from config.config_manager import config
+        """Get LLM client using tool-specific config."""
         from clients.llm_provider import GenericProviderClient
         from clients.vault_client import get_api_key
 
         # Get API key (None for local providers like Ollama)
-        if config.api.execution_api_key_name:
-            api_key = get_api_key(config.api.execution_api_key_name)
+        if self.config.llm_api_key_name:
+            api_key = get_api_key(self.config.llm_api_key_name)
         else:
             api_key = None  # Local provider (Ollama) - no API key needed
 
         return GenericProviderClient(
             api_key=api_key,
-            model=config.api.execution_model,
-            api_endpoint=config.api.execution_endpoint,
+            model=self.config.llm_model,
+            api_endpoint=self.config.llm_endpoint,
             temperature=0.3,
             max_tokens=1000
         )

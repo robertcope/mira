@@ -32,10 +32,7 @@ def _ensure_vault_client() -> 'VaultClient':
 
 
 class VaultClient:
-    """Production client with AppRole auth, env-based config, fail-fast validation, and KV v2 API.
-
-    Token renewal is handled automatically via scheduled task registration.
-    """
+    """Production client with AppRole auth, env-based config, fail-fast validation, and KV v2 API."""
 
     def __init__(self, vault_addr: Optional[str] = None,
                  vault_token: Optional[str] = None,
@@ -113,45 +110,6 @@ class VaultClient:
         except VaultError as e:
             logger.error(f"Vault API error for {path}/{field}: {e}")
             raise RuntimeError(f"Vault API error retrieving '{path}/{field}': {str(e)}")
-
-    def renew_token(self):
-        """Renew the Vault token to prevent expiration."""
-        try:
-            self.client.auth.token.renew_self()
-            logger.info("Vault token renewed successfully")
-        except Exception as e:
-            logger.error(f"Vault token renewal failed: {e}")
-            raise
-
-    def register_jobs(self, scheduler_service) -> None:
-        """
-        Register token renewal job with the scheduler.
-
-        Raises if job registration fails - token renewal is required.
-
-        Args:
-            scheduler_service: Scheduler service instance
-
-        Raises:
-            ImportError: If apscheduler package not available
-            RuntimeError: If job registration fails
-        """
-        from apscheduler.triggers.interval import IntervalTrigger
-
-        # Renew every 25 days (well before 32-day default expiration)
-        success = scheduler_service.register_job(
-            job_id="vault_token_renewal",
-            func=self.renew_token,
-            trigger=IntervalTrigger(days=25),
-            component="vault",
-            description="Renew Vault AppRole token to prevent expiration"
-        )
-
-        if not success:
-            raise RuntimeError("Failed to register vault token renewal job with scheduler")
-
-        logger.info("Vault token renewal job registered successfully")
-
 
 # Individual secret retrieval functions
 def get_database_url(service: str, admin: bool = False) -> str:

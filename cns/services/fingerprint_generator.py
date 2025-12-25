@@ -16,7 +16,6 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Set, Optional
 
-from config.config import ApiConfig
 from cns.core.continuum import Continuum
 from clients.vault_client import get_api_key
 
@@ -34,12 +33,12 @@ class FingerprintGenerator:
     specifics that match stored memory vocabulary for better embedding similarity.
     """
 
-    def __init__(self, config: ApiConfig, llm_provider):
+    def __init__(self, analysis_enabled: bool, llm_provider):
         """
         Initialize fingerprint generator.
 
         Args:
-            config: API configuration with LLM settings
+            analysis_enabled: Whether fingerprint generation is enabled
             llm_provider: LLM provider for fingerprint generation calls
 
         Raises:
@@ -47,12 +46,11 @@ class FingerprintGenerator:
             ValueError: If API key not found in Vault
             RuntimeError: If fingerprint generation is disabled
         """
-        self.config = config
         self.llm_provider = llm_provider
 
-        if not config.analysis_enabled:
+        if not analysis_enabled:
             raise RuntimeError(
-                "FingerprintGenerator requires analysis_enabled=True in configuration"
+                "FingerprintGenerator requires analysis_enabled=True"
             )
 
         # Load prompt templates
@@ -75,19 +73,24 @@ class FingerprintGenerator:
         with open(user_prompt_path, 'r') as f:
             self.user_prompt_template = f.read()
 
+        # Get LLM config from database
+        from utils.user_context import get_internal_llm
+        llm_config = get_internal_llm('analysis')
+        self._llm_config = llm_config
+
         # Get API key for LLM endpoint (None for local providers like Ollama)
-        if config.analysis_api_key_name:
-            self.api_key = get_api_key(config.analysis_api_key_name)
+        if llm_config.api_key_name:
+            self.api_key = get_api_key(llm_config.api_key_name)
             if not self.api_key:
                 raise ValueError(
-                    f"API key '{config.analysis_api_key_name}' not found in Vault"
+                    f"API key '{llm_config.api_key_name}' not found in Vault"
                 )
         else:
             self.api_key = None  # Local provider (Ollama) - no API key needed
 
         logger.info(
-            f"FingerprintGenerator initialized: {config.analysis_model} @ "
-            f"{config.analysis_endpoint}"
+            f"FingerprintGenerator initialized: {llm_config.model} @ "
+            f"{llm_config.endpoint_url}"
         )
 
     def generate_fingerprint(
@@ -146,8 +149,8 @@ class FingerprintGenerator:
             response = self.llm_provider.generate_response(
                 messages=[{"role": "user", "content": user_message}],
                 stream=False,
-                endpoint_url=self.config.analysis_endpoint,
-                model_override=self.config.analysis_model,
+                endpoint_url=self._llm_config.endpoint_url,
+                model_override=self._llm_config.model,
                 api_key_override=self.api_key,
                 system_override=self.system_prompt
             )

@@ -200,3 +200,7 @@ This section documents recurring mistakes. Keep it concise - only the most impor
 
 ## ❌ UUID Type Mismatches at Serialization Boundaries
 **Note**: Preserve native types (UUID, datetime, date) internally, convert only at serialization boundaries (API responses, external storage, logging, string formatting). Don't convert for database queries, function parameters, internal data structures, or comparisons. Common errors: `TypeError: Object of type UUID is not JSON serializable` means missing `str()` at boundary. `TypeError: '>' not supported between 'str' and 'UUID'` means converted too early.
+
+## ❌ Incomplete Code Path Replacement
+**Example**: Replacing `_generate_non_streaming()` with streaming logic but missing the `_write_firehose()` call buried inside it
+**Lesson**: When replacing a code path with new implementation, trace ALL side effects of the original - logging, metrics, state updates, event emissions. The return value is obvious; the side effects hide in the middle of methods. Run existing tests to catch what you missed.

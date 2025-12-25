@@ -198,8 +198,11 @@ async def lifespan(app: FastAPI):
     from cns.infrastructure.continuum_repository import get_continuum_repository
     continuum_repo = get_continuum_repository()
     logger.info("Continuum repository initialized with connection pool")
-    
 
+    # Load internal LLM configs from database (fail-fast at startup)
+    from utils.user_context import load_internal_llm_configs
+    load_internal_llm_configs()
+    logger.info("Internal LLM configs loaded from database")
 
     # Initialize lt_memory factory following MIRA's singleton pattern
     logger.info("Initializing lt_memory factory...")

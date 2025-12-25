@@ -125,6 +125,8 @@ class TierConfig:
     provider: LLMProvider = LLMProvider.ANTHROPIC
     endpoint_url: Optional[str] = None
     api_key_name: Optional[str] = None
+    show_locked: bool = False
+    locked_message: Optional[str] = None
 
 
 # Module-level cache for tiers (loaded once per process)
@@ -144,7 +146,7 @@ def get_account_tiers() -> dict[str, TierConfig]:
     db = PostgresClient('mira_service')
 
     results = db.execute_query(
-        "SELECT name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name FROM account_tiers ORDER BY display_order"
+        "SELECT name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, show_locked, locked_message FROM account_tiers ORDER BY display_order"
     )
 
     _tiers_cache = {
@@ -156,7 +158,9 @@ def get_account_tiers() -> dict[str, TierConfig]:
             display_order=row['display_order'],
             provider=LLMProvider(row['provider']),
             endpoint_url=row['endpoint_url'],
-            api_key_name=row['api_key_name']
+            api_key_name=row['api_key_name'],
+            show_locked=row.get('show_locked', False) or False,
+            locked_message=row.get('locked_message')
         )
         for row in results
     }
@@ -182,6 +186,50 @@ def can_access_tier(requested_tier: str, max_tier: str) -> bool:
     """Check if requested tier is within user's allowed access."""
     tiers = get_account_tiers()
     return tiers[requested_tier].display_order <= tiers[max_tier].display_order
+
+
+# ============================================================
+# InternalLLM - Database-backed internal LLM configurations
+# ============================================================
+
+@dataclass(frozen=True)
+class InternalLLMConfig:
+    """Internal LLM configuration for system operations (not user-facing)."""
+    name: str
+    model: str
+    endpoint_url: str
+    api_key_name: Optional[str]
+    description: str
+
+
+_internal_llm_cache: dict[str, InternalLLMConfig] | None = None
+
+
+def load_internal_llm_configs() -> None:
+    """Load internal LLM configs at startup. Call during app boot."""
+    global _internal_llm_cache
+    from clients.postgres_client import PostgresClient
+    db = PostgresClient('mira_service')
+    results = db.execute_query(
+        "SELECT name, model, endpoint_url, api_key_name, description FROM internal_llm"
+    )
+    _internal_llm_cache = {
+        row['name']: InternalLLMConfig(
+            name=row['name'],
+            model=row['model'],
+            endpoint_url=row['endpoint_url'],
+            api_key_name=row['api_key_name'],
+            description=row['description'] or ''
+        )
+        for row in results
+    }
+
+
+def get_internal_llm(name: str) -> InternalLLMConfig:
+    """Get internal LLM config by name."""
+    if _internal_llm_cache is None:
+        raise RuntimeError("Internal LLM configs not loaded. Call load_internal_llm_configs() at startup.")
+    return _internal_llm_cache[name]
 
 
 # ============================================================

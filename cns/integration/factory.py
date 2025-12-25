@@ -298,7 +298,7 @@ class CNSIntegrationFactory:
             logger.info("Initializing FingerprintGenerator")
             from ..services.fingerprint_generator import FingerprintGenerator
             self._fingerprint_generator = FingerprintGenerator(
-                config=self.config.api,
+                analysis_enabled=self.config.api.analysis_enabled,
                 llm_provider=llm_provider
             )
             logger.info("FingerprintGenerator initialized")
@@ -311,7 +311,6 @@ class CNSIntegrationFactory:
             from ..services.memory_evacuator import MemoryEvacuator
             self._memory_evacuator = MemoryEvacuator(
                 proactive_config=self.config.lt_memory.proactive,
-                api_config=self.config.api,
                 llm_provider=llm_provider
             )
             logger.info(

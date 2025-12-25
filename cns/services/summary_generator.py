@@ -64,9 +64,11 @@ class SummaryGenerator:
         self._load_prompts()
         
     def _create_default_llm(self) -> LLMProvider:
-        """Create default LLM provider for summary generation (uses Haiku for cost/speed)."""
+        """Create default LLM provider for summary generation."""
+        from utils.user_context import get_internal_llm
+        summary_config = get_internal_llm('summary')
         return LLMProvider(
-            model="claude-haiku-4-5",
+            model=summary_config.model,
             temperature=1.0,
             max_tokens=1000,  # Sufficient for rich summaries without extended thinking
             enable_prompt_caching=False  # No caching needed for one-shot summaries

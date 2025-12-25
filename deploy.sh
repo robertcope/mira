@@ -463,8 +463,10 @@ vault_put_if_not_exists() {
         return 0
     fi
 
-    run_with_status "Storing secret at $secret_path" \
-        vault kv put "$secret_path" "$@"
+    if ! run_with_status "Storing secret at $secret_path" vault kv put "$secret_path" "$@"; then
+        print_error "Failed to store secret at $secret_path - deployment cannot continue"
+        exit 1
+    fi
 }
 
 # ============================================================================
@@ -1452,45 +1454,41 @@ if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
     echo -ne "${DIM}${ARROW}${RESET} Patching config for offline mode... "
     OLLAMA_MODEL="${CONFIG_OLLAMA_MODEL:-qwen3:1.7b}"
     if [ "$OS" = "macos" ]; then
-        # Patch analysis settings (fingerprint generation, memory evacuation)
-        sed -i '' 's|analysis_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions"|analysis_endpoint: str = Field(default="http://localhost:11434/v1/chat/completions"|' /opt/mira/app/config/config.py
-        sed -i '' 's|analysis_api_key_name: str = Field(default="provider_key"|analysis_api_key_name: Optional[str] = Field(default=None|' /opt/mira/app/config/config.py
-        sed -i '' "s|analysis_model: str = Field(default=\"openai/gpt-oss-20b\"|analysis_model: str = Field(default=\"${OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
-        # Patch execution settings (dynamic routing for simple tools)
-        sed -i '' 's|execution_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions"|execution_endpoint: str = Field(default="http://localhost:11434/v1/chat/completions"|' /opt/mira/app/config/config.py
-        sed -i '' 's|execution_api_key_name: str = Field(default="provider_key"|execution_api_key_name: Optional[str] = Field(default=None|' /opt/mira/app/config/config.py
-        sed -i '' "s|execution_model: str = Field(default=\"openai/gpt-oss-20b\"|execution_model: str = Field(default=\"${OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
         # Patch database schema - account_tiers for offline mode (endpoint, model, api_key)
         sed -i '' "s|https://api.groq.com/openai/v1/chat/completions|http://localhost:11434/v1/chat/completions|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i '' "s|'qwen/qwen3-32b'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i '' "s|'moonshotai/kimi-k2-instruct-0905'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i '' "s|, 'provider_key')|, NULL)|g" /opt/mira/app/deploy/mira_service_schema.sql
+        # Patch database schema - internal_llm for offline mode
+        sed -i '' "s|'openai/gpt-oss-20b'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
     else
-        # Patch analysis settings (fingerprint generation, memory evacuation)
-        sed -i 's|analysis_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions"|analysis_endpoint: str = Field(default="http://localhost:11434/v1/chat/completions"|' /opt/mira/app/config/config.py
-        sed -i 's|analysis_api_key_name: str = Field(default="provider_key"|analysis_api_key_name: Optional[str] = Field(default=None|' /opt/mira/app/config/config.py
-        sed -i "s|analysis_model: str = Field(default=\"openai/gpt-oss-20b\"|analysis_model: str = Field(default=\"${OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
-        # Patch execution settings (dynamic routing for simple tools)
-        sed -i 's|execution_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions"|execution_endpoint: str = Field(default="http://localhost:11434/v1/chat/completions"|' /opt/mira/app/config/config.py
-        sed -i 's|execution_api_key_name: str = Field(default="provider_key"|execution_api_key_name: Optional[str] = Field(default=None|' /opt/mira/app/config/config.py
-        sed -i "s|execution_model: str = Field(default=\"openai/gpt-oss-20b\"|execution_model: str = Field(default=\"${OLLAMA_MODEL}\"|" /opt/mira/app/config/config.py
         # Patch database schema - account_tiers for offline mode (endpoint, model, api_key)
         sed -i "s|https://api.groq.com/openai/v1/chat/completions|http://localhost:11434/v1/chat/completions|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i "s|'qwen/qwen3-32b'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i "s|'moonshotai/kimi-k2-instruct-0905'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         sed -i "s|, 'provider_key')|, NULL)|g" /opt/mira/app/deploy/mira_service_schema.sql
+        # Patch database schema - internal_llm for offline mode
+        sed -i "s|'openai/gpt-oss-20b'|'${OLLAMA_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
     fi
     echo -e "${CHECKMARK}"
+
+    # Reminder: tools have hardcoded LLM configs
+    echo ""
+    echo -e "${DIM}NOTE: Tools (web_tool, getcontext_tool) use hardcoded LLM configs.${RESET}"
+    echo -e "${DIM}For offline providers, edit the tool config classes directly:${RESET}"
+    echo -e "${DIM}  - tools/implementations/web_tool.py (WebToolConfig)${RESET}"
+    echo -e "${DIM}  - tools/implementations/getcontext_tool.py (GetContextToolConfig)${RESET}"
+    echo ""
 fi
 
 # Patch provider endpoint and model if not Groq (after files are copied, before database is created)
 if [ "$CONFIG_PROVIDER_NAME" != "Groq" ] && [ -n "$CONFIG_PROVIDER_ENDPOINT" ]; then
     echo -ne "${DIM}${ARROW}${RESET} Patching provider endpoint (${CONFIG_PROVIDER_NAME})... "
     if [ "$OS" = "macos" ]; then
-        sed -i '' "s|https://api.groq.com/openai/v1/chat/completions|${CONFIG_PROVIDER_ENDPOINT}|g" /opt/mira/app/config/config.py
+        # Patch database schema - account_tiers and internal_llm endpoints
         sed -i '' "s|https://api.groq.com/openai/v1/chat/completions|${CONFIG_PROVIDER_ENDPOINT}|g" /opt/mira/app/deploy/mira_service_schema.sql
     else
-        sed -i "s|https://api.groq.com/openai/v1/chat/completions|${CONFIG_PROVIDER_ENDPOINT}|g" /opt/mira/app/config/config.py
+        # Patch database schema - account_tiers and internal_llm endpoints
         sed -i "s|https://api.groq.com/openai/v1/chat/completions|${CONFIG_PROVIDER_ENDPOINT}|g" /opt/mira/app/deploy/mira_service_schema.sql
     fi
     echo -e "${CHECKMARK}"
@@ -1499,22 +1497,28 @@ if [ "$CONFIG_PROVIDER_NAME" != "Groq" ] && [ -n "$CONFIG_PROVIDER_ENDPOINT" ]; 
     if [ -n "$CONFIG_PROVIDER_MODEL" ]; then
         echo -ne "${DIM}${ARROW}${RESET} Patching model names (${CONFIG_PROVIDER_MODEL})... "
         if [ "$OS" = "macos" ]; then
-            # Patch config.py - execution_model and analysis_model
-            sed -i '' "s|execution_model: str = Field(default=\"openai/gpt-oss-20b\"|execution_model: str = Field(default=\"${CONFIG_PROVIDER_MODEL}\"|" /opt/mira/app/config/config.py
-            sed -i '' "s|analysis_model: str = Field(default=\"openai/gpt-oss-20b\"|analysis_model: str = Field(default=\"${CONFIG_PROVIDER_MODEL}\"|" /opt/mira/app/config/config.py
             # Patch database schema - account_tiers models
             sed -i '' "s|'qwen/qwen3-32b'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
             sed -i '' "s|'moonshotai/kimi-k2-instruct-0905'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
+            # Patch database schema - internal_llm models (execution and analysis only)
+            sed -i '' "s|'openai/gpt-oss-20b'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         else
-            # Patch config.py - execution_model and analysis_model
-            sed -i "s|execution_model: str = Field(default=\"openai/gpt-oss-20b\"|execution_model: str = Field(default=\"${CONFIG_PROVIDER_MODEL}\"|" /opt/mira/app/config/config.py
-            sed -i "s|analysis_model: str = Field(default=\"openai/gpt-oss-20b\"|analysis_model: str = Field(default=\"${CONFIG_PROVIDER_MODEL}\"|" /opt/mira/app/config/config.py
             # Patch database schema - account_tiers models
             sed -i "s|'qwen/qwen3-32b'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
             sed -i "s|'moonshotai/kimi-k2-instruct-0905'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
+            # Patch database schema - internal_llm models (execution and analysis only)
+            sed -i "s|'openai/gpt-oss-20b'|'${CONFIG_PROVIDER_MODEL}'|g" /opt/mira/app/deploy/mira_service_schema.sql
         fi
         echo -e "${CHECKMARK}"
     fi
+
+    # Reminder: tools have hardcoded LLM configs
+    echo ""
+    echo -e "${DIM}NOTE: Tools (web_tool, getcontext_tool) use hardcoded LLM configs.${RESET}"
+    echo -e "${DIM}For custom providers, edit the tool config classes directly:${RESET}"
+    echo -e "${DIM}  - tools/implementations/web_tool.py (WebToolConfig)${RESET}"
+    echo -e "${DIM}  - tools/implementations/getcontext_tool.py (GetContextToolConfig)${RESET}"
+    echo ""
 fi
 
 print_header "Step 4: Python Environment Setup"

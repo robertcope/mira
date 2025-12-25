@@ -43,6 +43,10 @@ class WebToolConfig(BaseModel):
     enabled: bool = Field(default=True, description="Whether this tool is enabled")
     default_timeout: int = Field(default=30, description="Default timeout in seconds")
     max_timeout: int = Field(default=120, description="Maximum allowed timeout")
+    # LLM config for content extraction (self-contained - not database-backed)
+    llm_model: str = Field(default="openai/gpt-oss-20b", description="Model for content extraction")
+    llm_endpoint: str = Field(default="https://api.groq.com/openai/v1/chat/completions", description="LLM endpoint")
+    llm_api_key_name: Optional[str] = Field(default="provider_key", description="Vault key name for API key")
 
 
 registry.register("web_tool", WebToolConfig)
@@ -326,11 +330,14 @@ class WebTool(Tool):
         from clients.vault_client import get_api_key
         from clients.llm_provider import LLMProvider
 
+        # Get tool-specific LLM config
+        tool_config = config.web_tool
+
         # Get API key (None for local providers like Ollama)
-        if config.api.execution_api_key_name:
-            api_key = get_api_key(config.api.execution_api_key_name)
+        if tool_config.llm_api_key_name:
+            api_key = get_api_key(tool_config.llm_api_key_name)
             if not api_key:
-                raise RuntimeError(f"API key '{config.api.execution_api_key_name}' not found in Vault")
+                raise RuntimeError(f"API key '{tool_config.llm_api_key_name}' not found in Vault")
         else:
             api_key = None  # Local provider (Ollama) - no API key needed
 
@@ -358,8 +365,8 @@ SOURCE: {url}"""
         response = llm.generate_response(
             messages=[{"role": "user", "content": f"Extract from:\n```html\n{html}\n```"}],
             stream=False,
-            endpoint_url=config.api.execution_endpoint,
-            model_override=config.api.execution_model,
+            endpoint_url=tool_config.llm_endpoint,
+            model_override=tool_config.llm_model,
             api_key_override=api_key,
             system_override=system_prompt,
             temperature=0.1

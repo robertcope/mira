@@ -189,18 +189,17 @@ class DataEndpoint(BaseHandler):
     
     def _get_user(self, **params) -> Dict[str, Any]:
         """Get user profile and preferences."""
-        from utils.database_session_manager import get_shared_session_manager
+        from clients.postgres_client import PostgresClient
 
         user_id = get_current_user_id()
 
         # Fetch real user data from database
-        session_manager = get_shared_session_manager()
-        with session_manager.get_session() as session:
-            user = session.execute_single(
-                """SELECT id, email, first_name, last_name, created_at, last_login_at, timezone
-                   FROM users WHERE id = %(user_id)s""",
-                {"user_id": user_id}
-            )
+        db = PostgresClient("mira_service", user_id=user_id)
+        user = db.execute_single(
+            """SELECT id, email, first_name, last_name, created_at, last_login_at, timezone, last_donated_at
+               FROM users WHERE id = %(user_id)s""",
+            {"user_id": user_id}
+        )
 
         if not user:
             raise NotFoundError("user", str(user_id))
@@ -209,6 +208,12 @@ class DataEndpoint(BaseHandler):
         name = None
         if user.get('first_name') or user.get('last_name'):
             name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+
+        # Calculate donation banner visibility (suppress for 21 days after donation)
+        show_donation_banner = True
+        if user.get('last_donated_at'):
+            days_since_donation = (utc_now() - user['last_donated_at']).days
+            show_donation_banner = days_since_donation > 21
 
         return {
             "profile": {
@@ -222,7 +227,8 @@ class DataEndpoint(BaseHandler):
                 # Note: Preferences system not implemented yet - only timezone stored in users table
                 "theme": None,
                 "timezone": user.get("timezone", "UTC"),
-                "display_preferences": None
+                "display_preferences": None,
+                "show_donation_banner": show_donation_banner
             },
             "meta": {
                 "loaded_at": format_utc_iso(utc_now())

@@ -102,15 +102,35 @@ CREATE TABLE IF NOT EXISTS account_tiers (
     display_order INT NOT NULL DEFAULT 0,
     provider VARCHAR(20) NOT NULL DEFAULT 'anthropic' CHECK (provider IN ('anthropic', 'generic')),
     endpoint_url TEXT DEFAULT NULL,
-    api_key_name VARCHAR(50) DEFAULT NULL
+    api_key_name VARCHAR(50) DEFAULT NULL,
+    show_locked BOOLEAN DEFAULT FALSE,
+    locked_message TEXT
 );
 
--- Seed initial tiers: 2 Groq (fast, balanced) + 1 Anthropic (nuanced)
-INSERT INTO account_tiers (name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name) VALUES
-    ('fast', 'qwen/qwen3-32b', 0, 'Qwen3 32B via Groq', 1, 'generic', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key'),
-    ('balanced', 'moonshotai/kimi-k2-instruct-0905', 0, 'Kimi K2 via Groq', 2, 'generic', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key'),
-    ('nuanced', 'claude-opus-4-5-20251101', 8192, 'Opus with nuanced reasoning', 3, 'anthropic', NULL, NULL)
+INSERT INTO account_tiers (name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, show_locked, locked_message) VALUES
+    ('balanced', 'google/gemini-3-flash-preview', 0, 'Gemini 3 Flash', 1, 'generic', 'https://openrouter.ai/api/v1/chat/completions', 'openrouter_key', FALSE, NULL),
+    ('advanced', 'google/gemini-3-pro-preview', 0, 'Gemini 3 Pro', 2, 'generic', 'https://openrouter.ai/api/v1/chat/completions', 'openrouter_key', TRUE, 'Donate to MIRA to unlock Gemini 3 Pro'),
+    ('nuanced', 'claude-opus-4-5-20251101', 4096, 'Opus w/ Thinking', 3, 'anthropic', NULL, NULL, FALSE, NULL)
 ON CONFLICT (name) DO NOTHING;
+
+-- Internal LLM configurations for system operations (not user-facing)
+-- Contrasts with account_tiers which handles user-facing tier selection
+CREATE TABLE IF NOT EXISTS internal_llm (
+    name VARCHAR(50) PRIMARY KEY,
+    model VARCHAR(200) NOT NULL,
+    endpoint_url TEXT NOT NULL,
+    api_key_name VARCHAR(50),
+    description TEXT
+);
+
+INSERT INTO internal_llm (name, model, endpoint_url, api_key_name, description) VALUES
+    ('execution', 'openai/gpt-oss-20b', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key', 'Fast model for tool routing'),
+    ('analysis', 'openai/gpt-oss-20b', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key', 'Model for fingerprint generation and memory evacuation'),
+    ('summary', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Model for segment summary generation'),
+    ('injection_defense', 'meta-llama/llama-3.1-8b-instruct', 'https://openrouter.ai/api/v1/chat/completions', 'openrouter_key', 'Model for prompt injection detection')
+ON CONFLICT (name) DO NOTHING;
+
+GRANT SELECT ON internal_llm TO mira_dbuser;
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -124,16 +144,18 @@ CREATE TABLE IF NOT EXISTS users (
     memory_manipulation_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
     timezone VARCHAR(100) NOT NULL DEFAULT 'America/Chicago',
-    overarching_knowledge TEXT,
 
     -- Activity-based time tracking (vacation-proof scoring)
     cumulative_activity_days INT DEFAULT 0,
     last_activity_date DATE,
 
-    -- LLM tier preference (fast=Qwen3, balanced=K2, nuanced=Opus)
-    llm_tier VARCHAR(20) NOT NULL DEFAULT 'balanced' REFERENCES account_tiers(name),
+    -- LLM tier preference
+    llm_tier VARCHAR(20) DEFAULT 'balanced' REFERENCES account_tiers(name),
     -- Maximum tier this user can access (hierarchical: fast < balanced < nuanced)
-    max_tier VARCHAR(20) NOT NULL DEFAULT 'nuanced' REFERENCES account_tiers(name)
+    max_tier VARCHAR(20) NOT NULL DEFAULT 'nuanced' REFERENCES account_tiers(name),
+
+    -- Donation tracking (suppresses donation banner for 21 days when set)
+    last_donated_at TIMESTAMP WITH TIME ZONE
 );
 
 -- Grant SELECT on account_tiers to application user
@@ -155,7 +177,6 @@ CREATE TABLE IF NOT EXISTS users_trash (
     memory_manipulation_enabled BOOLEAN,
     daily_manipulation_last_run TIMESTAMP WITH TIME ZONE,
     timezone VARCHAR(100),
-    overarching_knowledge TEXT,
     cumulative_activity_days INT,
     last_activity_date DATE,
     deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

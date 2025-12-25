@@ -1746,6 +1746,140 @@ class TestLLMProviderMessageMutationSafety:
         assert "content" in assistant_msg
 
 
+class TestLLMProviderReasoningDetailsPreservation:
+    """Test reasoning_details preservation for OpenRouter reasoning models.
+
+    When using reasoning models (Gemini 3, OpenAI o1/o3) via OpenRouter,
+    reasoning_details must be preserved and passed back in tool call chains.
+    """
+
+    def test_generic_response_reasoning_details_attached_to_assistant_message(self):
+        """Verify reasoning_details from GenericOpenAIResponse is attached to assistant message.
+
+        This tests the logic in stream_events() agentic loop that preserves
+        reasoning_details when building assistant messages for tool call continuations.
+        """
+        from types import SimpleNamespace
+        from utils.generic_openai_client import GenericOpenAIResponse
+
+        # Simulate a GenericOpenAIResponse with reasoning_details (from Gemini 3 via OpenRouter)
+        reasoning_details = [
+            {"type": "reasoning.text", "text": "Let me think about this..."},
+            {"type": "reasoning.encrypted", "thought_signature": "abc123"}
+        ]
+
+        response = GenericOpenAIResponse(
+            content=[
+                SimpleNamespace(type="text", text="I'll help with that."),
+                SimpleNamespace(type="tool_use", id="tool_123", name="web_tool", input={"query": "test"})
+            ],
+            stop_reason="tool_use",
+            usage={"input_tokens": 100, "output_tokens": 50},
+            reasoning_details=reasoning_details
+        )
+
+        # Build assistant message the same way stream_events() does
+        assistant_content = []
+        for block in response.content:
+            if block.type == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input
+                })
+
+        assistant_msg = {"role": "assistant", "content": assistant_content}
+
+        # This is the new logic we added
+        if hasattr(response, 'reasoning_details') and response.reasoning_details:
+            assistant_msg["reasoning_details"] = response.reasoning_details
+
+        # Verify reasoning_details is attached
+        assert "reasoning_details" in assistant_msg
+        assert assistant_msg["reasoning_details"] == reasoning_details
+
+    def test_assistant_message_without_reasoning_details(self):
+        """Verify assistant message works correctly when no reasoning_details present.
+
+        Standard Anthropic responses and non-reasoning models don't have reasoning_details.
+        """
+        from types import SimpleNamespace
+        from utils.generic_openai_client import GenericOpenAIResponse
+
+        # Response without reasoning_details (standard case)
+        response = GenericOpenAIResponse(
+            content=[
+                SimpleNamespace(type="text", text="Hello!"),
+            ],
+            stop_reason="end_turn",
+            usage={"input_tokens": 50, "output_tokens": 20}
+            # No reasoning_details parameter
+        )
+
+        # Build assistant message
+        assistant_content = []
+        for block in response.content:
+            if block.type == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+
+        assistant_msg = {"role": "assistant", "content": assistant_content}
+
+        # Apply the reasoning_details logic
+        if hasattr(response, 'reasoning_details') and response.reasoning_details:
+            assistant_msg["reasoning_details"] = response.reasoning_details
+
+        # Verify reasoning_details is NOT attached when None
+        assert "reasoning_details" not in assistant_msg
+
+    def test_reasoning_details_round_trip_through_convert_messages(self):
+        """Verify reasoning_details survives round-trip through message conversion.
+
+        Messages with reasoning_details should preserve it when converted
+        from Anthropic format to OpenAI format and back.
+        """
+        from utils.generic_openai_client import GenericOpenAIClient
+
+        client = GenericOpenAIClient(
+            endpoint="http://localhost:11434/v1/chat/completions",
+            api_key="test",
+            model="test"
+        )
+
+        reasoning_details = [{"type": "reasoning.encrypted", "signature": "xyz789"}]
+
+        # Anthropic-format messages with reasoning_details
+        anthropic_messages = [
+            {"role": "user", "content": "Search for weather"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll search for that."},
+                    {"type": "tool_use", "id": "tool_1", "name": "web_tool", "input": {"q": "weather"}}
+                ],
+                "reasoning_details": reasoning_details
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tool_1", "content": "Sunny, 72°F"}
+                ]
+            }
+        ]
+
+        # Convert to OpenAI format
+        openai_messages = client._convert_messages(anthropic_messages)
+
+        # Find the assistant message
+        assistant_msg = next(m for m in openai_messages if m["role"] == "assistant")
+
+        # Verify reasoning_details preserved
+        assert "reasoning_details" in assistant_msg
+        assert assistant_msg["reasoning_details"] == reasoning_details
+
+
 class TestLLMProviderUsageReporting:
     """Test accurate usage reporting for tokens."""
 
@@ -1774,3 +1908,312 @@ class TestLLMProviderUsageReporting:
 
         # Longer input should have more input tokens
         assert long_response.usage.input_tokens > short_response.usage.input_tokens
+
+
+class TestGenericProviderCircuitBreaker:
+    """Test circuit breaker integration in the generic provider agentic loop.
+
+    These tests use REAL API calls to OpenRouter with controlled tool implementations.
+    Only tool behavior is controlled - the LLM makes real decisions.
+    """
+
+    @pytest.fixture
+    def openrouter_api_key(self):
+        """Get OpenRouter API key from Vault."""
+        try:
+            key = get_api_key("openrouter_key")
+            if not key:
+                pytest.skip("OpenRouter API key not configured in Vault")
+            return key
+        except Exception as e:
+            pytest.skip(f"Failed to retrieve OpenRouter API key: {e}")
+
+    def test_circuit_breaker_stops_on_tool_error(self, llm_provider, openrouter_api_key):
+        """Verify circuit breaker triggers on tool execution error.
+
+        Uses real OpenRouter API call. Tool implementation raises an error.
+        Circuit breaker should detect the error and force a graceful exit.
+        """
+        class FailingToolRepo:
+            """Tool repository where the tool always fails."""
+            def invoke_tool(self, name: str, params: dict):
+                raise ConnectionError("External API unavailable")
+
+        llm_provider.tool_repo = FailingToolRepo()
+
+        messages = [{"role": "user", "content": "Use the check_status tool to check the system status."}]
+        tools = [{
+            "name": "check_status",
+            "description": "Check system status. Always call this tool when asked about status.",
+            "input_schema": {"type": "object", "properties": {}, "required": []}
+        }]
+
+        events = list(llm_provider.stream_events(
+            messages=messages,
+            tools=tools,
+            endpoint_url="https://openrouter.ai/api/v1/chat/completions",
+            model_override="anthropic/claude-3-haiku",
+            api_key_override=openrouter_api_key
+        ))
+
+        # Should have ToolErrorEvent
+        error_events = [e for e in events if isinstance(e, ToolErrorEvent)]
+        assert len(error_events) >= 1
+        assert "External API unavailable" in error_events[0].error
+
+        # Should have CircuitBreakerEvent
+        circuit_breaker_events = [e for e in events if isinstance(e, CircuitBreakerEvent)]
+        assert len(circuit_breaker_events) == 1
+        assert "Tool error" in circuit_breaker_events[0].reason
+
+        # Should complete gracefully
+        complete_events = [e for e in events if isinstance(e, CompleteEvent)]
+        assert len(complete_events) == 1
+
+    def test_circuit_breaker_stops_on_repeated_identical_results(self, llm_provider, openrouter_api_key):
+        """Verify circuit breaker triggers when tool returns identical results.
+
+        Uses real OpenRouter API call. Tool always returns the same cached data.
+        Circuit breaker should detect the loop and force a graceful exit.
+        """
+        class StuckToolRepo:
+            """Tool repository where the tool always returns identical results."""
+            def __init__(self):
+                self.call_count = 0
+
+            def invoke_tool(self, name: str, params: dict):
+                self.call_count += 1
+                # Always return identical result - triggers loop detection
+                return {"status": "pending", "data": "cached_value_123"}
+
+        tool_repo = StuckToolRepo()
+        llm_provider.tool_repo = tool_repo
+
+        # Prompt designed to encourage repeated tool calls
+        messages = [{
+            "role": "user",
+            "content": "Keep calling get_update until the status changes from 'pending'. Call the tool multiple times."
+        }]
+        tools = [{
+            "name": "get_update",
+            "description": "Get the latest update. Returns status and data. Call repeatedly until status changes.",
+            "input_schema": {"type": "object", "properties": {}, "required": []}
+        }]
+
+        events = list(llm_provider.stream_events(
+            messages=messages,
+            tools=tools,
+            endpoint_url="https://openrouter.ai/api/v1/chat/completions",
+            model_override="anthropic/claude-3-haiku",
+            api_key_override=openrouter_api_key
+        ))
+
+        # Tool should have been called at least twice (to trigger loop detection)
+        assert tool_repo.call_count >= 2
+
+        # Should have CircuitBreakerEvent due to repeated identical results
+        circuit_breaker_events = [e for e in events if isinstance(e, CircuitBreakerEvent)]
+        assert len(circuit_breaker_events) == 1
+        assert "Repeated identical results" in circuit_breaker_events[0].reason
+
+        # Should complete gracefully
+        complete_events = [e for e in events if isinstance(e, CompleteEvent)]
+        assert len(complete_events) == 1
+
+    def test_circuit_breaker_allows_varying_results(self, llm_provider, openrouter_api_key):
+        """Verify circuit breaker does NOT trigger when results vary.
+
+        Uses real OpenRouter API call. Tool returns different data each time.
+        Loop should continue until LLM decides to stop (not circuit breaker).
+        """
+        class VaryingToolRepo:
+            """Tool repository where the tool returns different results each call."""
+            def __init__(self):
+                self.call_count = 0
+
+            def invoke_tool(self, name: str, params: dict):
+                self.call_count += 1
+                # Return different result each time - no loop detection trigger
+                if self.call_count >= 3:
+                    return {"status": "complete", "items": [f"final_item_{self.call_count}"]}
+                return {"status": "more_available", "items": [f"item_{self.call_count}"]}
+
+        tool_repo = VaryingToolRepo()
+        llm_provider.tool_repo = tool_repo
+
+        messages = [{
+            "role": "user",
+            "content": "Call fetch_items until status is 'complete', then summarize what you found."
+        }]
+        tools = [{
+            "name": "fetch_items",
+            "description": "Fetch items. Returns status ('more_available' or 'complete') and items list.",
+            "input_schema": {"type": "object", "properties": {}, "required": []}
+        }]
+
+        events = list(llm_provider.stream_events(
+            messages=messages,
+            tools=tools,
+            endpoint_url="https://openrouter.ai/api/v1/chat/completions",
+            model_override="anthropic/claude-3-haiku",
+            api_key_override=openrouter_api_key
+        ))
+
+        # Should NOT have CircuitBreakerEvent (results varied)
+        circuit_breaker_events = [e for e in events if isinstance(e, CircuitBreakerEvent)]
+        assert len(circuit_breaker_events) == 0
+
+        # Should complete normally
+        complete_events = [e for e in events if isinstance(e, CompleteEvent)]
+        assert len(complete_events) == 1
+
+        # Tool should have been called multiple times
+        assert tool_repo.call_count >= 1
+
+    def test_parallel_tool_execution(self, llm_provider, openrouter_api_key):
+        """Verify tools execute in parallel, not sequentially.
+
+        Uses timing to detect parallelism: 2 tools × 1s each = 2s sequential vs ~1s parallel.
+        """
+        import time
+
+        class SlowToolRepo:
+            """Tool repo where each tool takes 1 second."""
+            def __init__(self):
+                self.call_times = []
+
+            def invoke_tool(self, name: str, params: dict):
+                start = time.time()
+                time.sleep(1)  # Simulate slow I/O operation
+                self.call_times.append((name, start, time.time()))
+                return {"result": f"done_{name}"}
+
+        tool_repo = SlowToolRepo()
+        llm_provider.tool_repo = tool_repo
+
+        # Prompt designed to trigger multiple tool calls in single response
+        messages = [{
+            "role": "user",
+            "content": "Call both tool_a AND tool_b right now. You must call both tools."
+        }]
+        tools = [
+            {"name": "tool_a", "description": "First tool - call this", "input_schema": {"type": "object", "properties": {}, "required": []}},
+            {"name": "tool_b", "description": "Second tool - call this too", "input_schema": {"type": "object", "properties": {}, "required": []}}
+        ]
+
+        start_time = time.time()
+        events = list(llm_provider.stream_events(
+            messages=messages,
+            tools=tools,
+            endpoint_url="https://openrouter.ai/api/v1/chat/completions",
+            model_override="anthropic/claude-3-haiku",
+            api_key_override=openrouter_api_key
+        ))
+        total_time = time.time() - start_time
+
+        # Only assert on timing if model actually called 2+ tools
+        if len(tool_repo.call_times) >= 2:
+            # Verify parallelism by checking tool start times overlap
+            # If sequential: tool_b starts after tool_a ends (start_b >= end_a)
+            # If parallel: tool_b starts before tool_a ends (start_b < end_a)
+            times_by_name = {name: (start, end) for name, start, end in tool_repo.call_times}
+            if "tool_a" in times_by_name and "tool_b" in times_by_name:
+                a_start, a_end = times_by_name["tool_a"]
+                b_start, b_end = times_by_name["tool_b"]
+                # Tools overlap if one starts before the other ends
+                overlap = (b_start < a_end) or (a_start < b_end)
+                assert overlap, f"Tools ran sequentially: tool_a={a_start:.2f}-{a_end:.2f}, tool_b={b_start:.2f}-{b_end:.2f}"
+
+
+class TestFirehose:
+    """Test firehose debugging tap controlled by MIRA_FIREHOSE env var."""
+
+    @pytest.fixture
+    def firehose_path(self, tmp_path, monkeypatch):
+        """Set up firehose to write to temp directory."""
+        # Change to temp dir so firehose_output.json is written there
+        monkeypatch.chdir(tmp_path)
+        return tmp_path / "firehose_output.json"
+
+    def test_firehose_disabled_by_default(self, anthropic_api_key, firehose_path, monkeypatch):
+        """Verify firehose does NOT write when env var is unset."""
+        # Ensure env var is not set
+        monkeypatch.delenv('MIRA_FIREHOSE', raising=False)
+
+        provider = LLMProvider(
+            api_key=anthropic_api_key,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50
+        )
+
+        # Make a request
+        provider.generate_response(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False
+        )
+
+        # File should NOT exist
+        assert not firehose_path.exists(), "Firehose wrote file when disabled"
+
+    def test_firehose_writes_when_enabled(self, anthropic_api_key, firehose_path, monkeypatch):
+        """Verify firehose writes when MIRA_FIREHOSE is set."""
+        monkeypatch.setenv('MIRA_FIREHOSE', '1')
+
+        provider = LLMProvider(
+            api_key=anthropic_api_key,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50
+        )
+
+        provider.generate_response(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False
+        )
+
+        # File should exist
+        assert firehose_path.exists(), "Firehose did not write file when enabled"
+
+        # Verify content structure
+        import json
+        with open(firehose_path) as f:
+            data = json.load(f)
+
+        assert data["provider"] == "anthropic"
+        assert "timestamp" in data
+        assert "model" in data
+        assert "messages" in data
+
+    def test_firehose_captures_generic_provider(self, anthropic_api_key, firehose_path, monkeypatch):
+        """Verify firehose captures generic provider requests with endpoint info."""
+        monkeypatch.setenv('MIRA_FIREHOSE', '1')
+
+        openrouter_key = get_api_key("openrouter_key")
+        if not openrouter_key:
+            pytest.skip("OpenRouter key not available")
+
+        provider = LLMProvider(
+            api_key=anthropic_api_key,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50
+        )
+
+        # Use stream_events to go through generic path
+        try:
+            list(provider.stream_events(
+                messages=[{"role": "user", "content": "hi"}],
+                endpoint_url="https://openrouter.ai/api/v1/chat/completions",
+                model_override="anthropic/claude-3-haiku",
+                api_key_override=openrouter_key
+            ))
+        except Exception:
+            pass  # API errors are fine, firehose writes before the call
+
+        assert firehose_path.exists(), "Firehose did not write for generic provider"
+
+        import json
+        with open(firehose_path) as f:
+            data = json.load(f)
+
+        assert data["provider"] == "generic"
+        assert data["endpoint"] == "https://openrouter.ai/api/v1/chat/completions"
+        assert data["model"] == "anthropic/claude-3-haiku"

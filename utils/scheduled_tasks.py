@@ -16,9 +16,6 @@ SCHEDULED_TASK_MODULES: List[Tuple[str, str, bool, callable]] = [
     # Auth service - already has global instance
     # auth.service removed for OSS (single-user mode)
 
-    # Vault client - token renewal to prevent expiration (uses factory to ensure initialization)
-    ('clients.vault_client', '_ensure_vault_client', True, lambda: {}),
-
     # Segment timeout detection - registered separately (needs event_bus)
     # See register_segment_timeout_job() below
 ]

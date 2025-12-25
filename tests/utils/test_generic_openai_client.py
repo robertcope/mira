@@ -457,6 +457,84 @@ class TestGenericOpenAIClientResponseValidation:
         assert isinstance(block.text, str)
 
 
+class TestGenericOpenAIClientReasoningDetails:
+    """Test reasoning_details preservation for OpenRouter reasoning models."""
+
+    def test_response_stores_reasoning_details_attribute(self):
+        """Verify GenericOpenAIResponse stores reasoning_details when provided."""
+        reasoning_details = [
+            {"type": "reasoning.text", "text": "Thinking about the problem..."},
+            {"type": "reasoning.encrypted", "data": "encrypted_signature_abc"}
+        ]
+
+        response = GenericOpenAIResponse(
+            content=[],
+            stop_reason="end_turn",
+            usage={"input_tokens": 10, "output_tokens": 20},
+            reasoning_details=reasoning_details
+        )
+
+        assert response.reasoning_details == reasoning_details
+
+    def test_response_reasoning_details_defaults_to_none(self):
+        """Verify reasoning_details defaults to None when not provided."""
+        response = GenericOpenAIResponse(
+            content=[],
+            stop_reason="end_turn",
+            usage={"input_tokens": 10, "output_tokens": 20}
+        )
+
+        assert response.reasoning_details is None
+
+    def test_convert_messages_preserves_reasoning_details_on_assistant(self):
+        """Verify _convert_messages() preserves reasoning_details on assistant messages."""
+        client = GenericOpenAIClient(
+            endpoint="http://localhost:11434/v1/chat/completions",
+            api_key="test",
+            model="test"
+        )
+
+        reasoning_details = [{"type": "reasoning.text", "text": "Thinking..."}]
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hi there!"}],
+                "reasoning_details": reasoning_details
+            }
+        ]
+
+        converted = client._convert_messages(messages)
+
+        # Find the assistant message
+        assistant_msgs = [m for m in converted if m["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        assert assistant_msgs[0].get("reasoning_details") == reasoning_details
+
+    def test_convert_messages_without_reasoning_details(self):
+        """Verify _convert_messages() works when reasoning_details not present."""
+        client = GenericOpenAIClient(
+            endpoint="http://localhost:11434/v1/chat/completions",
+            api_key="test",
+            model="test"
+        )
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hi there!"}]
+            }
+        ]
+
+        converted = client._convert_messages(messages)
+
+        # Assistant message should not have reasoning_details key
+        assistant_msgs = [m for m in converted if m["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        assert "reasoning_details" not in assistant_msgs[0]
+
+
 class TestGenericOpenAIClientSpecialCases:
     """Test special cases and edge conditions."""
 

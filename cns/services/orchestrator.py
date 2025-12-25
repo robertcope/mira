@@ -9,6 +9,7 @@ Optimized to generate embeddings once and propagate them to all services.
 import logging
 from typing import Dict, Any, List, Optional, Union
 
+from config import config
 from cns.core.continuum import Continuum
 from cns.core.events import (
     ContinuumEvent,
