@@ -63,6 +63,10 @@ class MIRAClient {
             console.log('Loading preferences...');
             await this.loadPreferences();
 
+            // Restore UI display state from server
+            console.log('Loading UI display state...');
+            await this.loadDisplayState();
+
             console.log('Initialization complete!');
 
         } catch (error) {
@@ -195,11 +199,17 @@ class MIRAClient {
             // Strip internal emotion tags before display
             const cleanResponse = this.stripEmotionTag(data.data.response);
 
+            // Store raw content as data attribute for later retrieval
+            assistantMessageDiv.setAttribute('data-raw-content', cleanResponse);
+
             // Display the complete response with markdown rendering
             assistantMessageDiv.innerHTML = marked.parse(cleanResponse);
 
             // Log metadata
             console.log('Response metadata:', data.data.metadata);
+
+            // Save display state to server after successful message exchange
+            await this.saveDisplayState();
 
         } catch (error) {
             console.error('Chat error:', error);
@@ -250,6 +260,7 @@ class MIRAClient {
 
             case 'clear':
                 this.clearMessages();
+                this.clearServerDisplayState();
                 break;
 
             case 'quit':
@@ -384,6 +395,108 @@ class MIRAClient {
         }
     }
 
+    async loadDisplayState() {
+        try {
+            const response = await fetch('/v0/api/actions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    domain: 'ui_session',
+                    action: 'get_display'
+                })
+            });
+
+            const data = await response.json();
+            // Response structure: { success: true, data: { messages: [...], message_count: N } }
+            if (data.success && data.data && data.data.messages && data.data.messages.length > 0) {
+                console.log(`Restoring ${data.data.messages.length} messages from server`);
+
+                // Clear any existing messages
+                this.messagesContainer.innerHTML = '';
+
+                // Restore each message
+                data.data.messages.forEach(msg => {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = `message message-${msg.role}`;
+
+                    // For assistant messages with markdown, render it and store raw content
+                    if (msg.role === 'assistant' && typeof marked !== 'undefined') {
+                        messageDiv.setAttribute('data-raw-content', msg.content);
+                        messageDiv.innerHTML = marked.parse(msg.content);
+                    } else {
+                        messageDiv.textContent = msg.content;
+                    }
+
+                    this.messagesContainer.appendChild(messageDiv);
+                });
+
+                this.scrollToBottom();
+            } else {
+                console.log('No stored display state found');
+            }
+        } catch (error) {
+            console.error('Failed to load display state:', error);
+        }
+    }
+
+    async saveDisplayState() {
+        try {
+            // Extract messages from DOM
+            const messageElements = this.messagesContainer.querySelectorAll('.message:not(.message-history)');
+            const messages = [];
+
+            messageElements.forEach(el => {
+                // Skip history messages - only save current chat display
+                if (el.classList.contains('message-history')) {
+                    return;
+                }
+
+                // Determine role from class
+                let role = 'user';
+                if (el.classList.contains('message-assistant')) {
+                    role = 'assistant';
+                } else if (el.classList.contains('message-error')) {
+                    role = 'system';
+                }
+
+                // Get content - for assistant messages, use raw markdown if available
+                let content;
+                if (role === 'assistant' && el.hasAttribute('data-raw-content')) {
+                    content = el.getAttribute('data-raw-content');
+                } else {
+                    content = el.textContent;
+                }
+
+                messages.push({ role, content });
+            });
+
+            const response = await fetch('/v0/api/actions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    domain: 'ui_session',
+                    action: 'save_display',
+                    data: { messages }
+                })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                console.log(`Saved ${messages.length} messages to server`);
+            } else {
+                console.error('Failed to save display state:', result);
+            }
+        } catch (error) {
+            console.error('Failed to save display state:', error);
+        }
+    }
+
     updateStatusBar() {
         const tierDescriptions = {
             balanced: 'Gemini 3 Flash • Balanced',
@@ -457,6 +570,31 @@ class MIRAClient {
 
     clearMessages() {
         this.messagesContainer.innerHTML = '';
+    }
+
+    async clearServerDisplayState() {
+        try {
+            const response = await fetch('/v0/api/actions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    domain: 'ui_session',
+                    action: 'clear_display'
+                })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                console.log('Server display state cleared');
+            } else {
+                console.error('Failed to clear server display state:', result);
+            }
+        } catch (error) {
+            console.error('Failed to clear server display state:', error);
+        }
     }
 
     showThinking() {
