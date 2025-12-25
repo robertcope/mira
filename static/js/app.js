@@ -24,6 +24,14 @@ class MIRAClient {
     async init() {
         console.log('Initializing MIRA client...');
 
+        // Configure marked.js for better rendering
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                breaks: true,  // Convert \n to <br>
+                gfm: true,     // GitHub Flavored Markdown
+            });
+        }
+
         try {
             console.log('Checking server health...');
             const response = await fetch('/v0/api/health');
@@ -187,8 +195,8 @@ class MIRAClient {
             // Strip internal emotion tags before display
             const cleanResponse = this.stripEmotionTag(data.data.response);
 
-            // Display the complete response
-            assistantMessageDiv.textContent = cleanResponse;
+            // Display the complete response with markdown rendering
+            assistantMessageDiv.innerHTML = marked.parse(cleanResponse);
 
             // Log metadata
             console.log('Response metadata:', data.data.metadata);
