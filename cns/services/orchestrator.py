@@ -437,6 +437,10 @@ class ContinuumOrchestrator:
         if parsed_tags.get('emotion'):
             assistant_metadata["emotion"] = parsed_tags['emotion']
 
+        # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+        if hasattr(raw_response, 'reasoning_details') and raw_response.reasoning_details:
+            assistant_metadata["reasoning_details"] = raw_response.reasoning_details
+
         assistant_msg_obj, response_events = continuum.add_assistant_message(
             clean_response_text, assistant_metadata
         )

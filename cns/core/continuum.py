@@ -141,6 +141,9 @@ class Continuum:
                 }
                 if "tool_calls" in message.metadata:
                     msg_dict["tool_calls"] = message.metadata["tool_calls"]
+                # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+                if "reasoning_details" in message.metadata:
+                    msg_dict["reasoning_details"] = message.metadata["reasoning_details"]
                 formatted_messages.append(msg_dict)
             elif message.role == "tool":
                 # Tool result message
@@ -157,10 +160,14 @@ class Continuum:
                 })
             else:
                 # Standard text message
-                formatted_messages.append({
+                msg_dict = {
                     "role": message.role,
                     "content": content
-                })
+                }
+                # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+                if message.role == "assistant" and "reasoning_details" in message.metadata:
+                    msg_dict["reasoning_details"] = message.metadata["reasoning_details"]
+                formatted_messages.append(msg_dict)
 
         # Apply cache_control to last assistant message for conversation history caching
         # Anthropic ignores cache markers on content < 1024 tokens, so always mark
