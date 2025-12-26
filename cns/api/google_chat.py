@@ -58,6 +58,49 @@ class GoogleChatEvent(BaseModel):
 class GoogleChatHandler(BaseHandler):
     """Handler for Google Chat webhook events."""
 
+    def _store_chat_space(self, event_data: Dict[str, Any], user_id: str):
+        """
+        Store Google Chat space information for push notifications.
+
+        Args:
+            event_data: Full Google Chat event payload
+            user_id: MIRA user ID
+        """
+        try:
+            from utils.google_chat_spaces_repository import GoogleChatSpacesRepository
+
+            # Extract space information from event
+            space_info = event_data.get("space", {})
+            space_name = space_info.get("name")
+
+            if not space_name:
+                logger.warning("No space name in Google Chat event")
+                return
+
+            # Determine space type
+            space_type = space_info.get("type", "DM")
+
+            # Extract thread key if present (for threading replies)
+            thread_key = None
+            message_info = event_data.get("message", {})
+            thread_info = message_info.get("thread", {})
+            if thread_info:
+                thread_key = thread_info.get("name")
+
+            # Store space info
+            spaces_repo = GoogleChatSpacesRepository()
+            spaces_repo.upsert_space(
+                space_name=space_name,
+                space_type=space_type,
+                thread_key=thread_key
+            )
+
+            logger.debug(f"Stored Google Chat space {space_name} for user {user_id}")
+
+        except Exception as e:
+            # Don't fail the message processing if space storage fails
+            logger.error(f"Error storing Google Chat space: {e}", exc_info=True)
+
     def process_message_event(
         self,
         *,
@@ -80,8 +123,18 @@ class GoogleChatHandler(BaseHandler):
         """
         start_time = utc_now()
 
+        # Validate user_id
+        if not user_id or user_id.strip() == "":
+            logger.error(f"Invalid user_id received: '{user_id}' (type: {type(user_id)})")
+            raise ValidationError(f"Invalid user_id: user_id cannot be empty (received: '{user_id}')")
+
+        logger.debug(f"Processing message for user_id: {user_id}")
+
         # Set user context for RLS
         set_current_user_id(user_id)
+
+        # Store Google Chat space for push notifications
+        self._store_chat_space(event_data, user_id)
 
         # Sanitize message text
         msg = sanitize_message_content(message_text.strip())
@@ -318,7 +371,18 @@ async def google_chat_webhook(request: Request):
 
             # For OSS single-user mode: Use the single MIRA user
             # For multi-user: Would map Google user email to MIRA user_id
-            user_id = request.app.state.single_user_id
+            user_id = getattr(request.app.state, 'single_user_id', None)
+
+            if not user_id:
+                logger.error("single_user_id not set in app.state - Google Chat requires single-user mode")
+                return JSONResponse(
+                    content=format_error_as_card(
+                        "CONFIGURATION_ERROR",
+                        "MIRA not configured for single-user mode"
+                    ),
+                    media_type="application/json",
+                    status_code=500
+                )
 
             # Process message through MIRA (run synchronously in thread pool)
             from anyio import to_thread
@@ -389,7 +453,18 @@ async def google_chat_webhook(request: Request):
 
             # For OSS single-user mode: Use the single MIRA user
             # For multi-user: Would map Google user email to MIRA user_id
-            user_id = request.app.state.single_user_id
+            user_id = getattr(request.app.state, 'single_user_id', None)
+
+            if not user_id:
+                logger.error("single_user_id not set in app.state - Google Chat requires single-user mode")
+                return JSONResponse(
+                    content=format_error_as_card(
+                        "CONFIGURATION_ERROR",
+                        "MIRA not configured for single-user mode"
+                    ),
+                    media_type="application/json",
+                    status_code=500
+                )
 
             # Process message through MIRA (run synchronously in thread pool)
             from anyio import to_thread

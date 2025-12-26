@@ -50,6 +50,13 @@ class PostgresClient:
     
     def __init__(self, database_name: str, user_id: Optional[str] = None):
         self.database_name = database_name
+
+        # If user_id not provided, try to get it from context
+        if user_id is None:
+            from utils.user_context import has_user_context, get_current_user_id
+            if has_user_context():
+                user_id = get_current_user_id()
+
         self.user_id = user_id
         from clients.vault_client import get_database_url
         self._database_url = get_database_url(database_name)
@@ -156,16 +163,24 @@ class PostgresClient:
         return _convert(params) if params is not None else None
     
     def execute_query(self, query: str, params: Optional[Union[Dict, Tuple]] = None) -> List[Dict]:
-        """Execute a SELECT query and return rows as list of dictionaries."""
+        """Execute a query and return rows as list of dictionaries."""
         params = self._convert_uuid_params(params)
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(query, params)
+
+                # Fetch results if query returns data
                 if cur.description:
-                    return [dict(row) for row in cur.fetchall()]
+                    results = [dict(row) for row in cur.fetchall()]
                 else:
+                    results = []
+
+                # Commit for write operations (INSERT/UPDATE/DELETE)
+                query_upper = query.strip().upper()
+                if query_upper.startswith(('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP')):
                     conn.commit()
-                    return []
+
+                return results
     
     def execute_returning(self, query: str, params: Optional[Union[Dict, Tuple]] = None) -> List[Dict]:
         params = self._convert_uuid_params(params)

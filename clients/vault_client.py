@@ -174,17 +174,42 @@ def get_service_config(service: str, field: str) -> str:
     return value
 
 
+def get_secret_data(path: str) -> Dict[str, Any]:
+    """
+    Get all data from a secret path (for JSON/structured secrets like service accounts).
+
+    Args:
+        path: Secret path (e.g., 'mira/google_service_account')
+
+    Returns:
+        Dict containing all secret data
+
+    Raises:
+        RuntimeError: If secret cannot be retrieved
+    """
+    vault_client = _ensure_vault_client()
+    try:
+        response = vault_client.client.secrets.kv.v2.read_secret_version(
+            path=path,
+            raise_on_deleted_version=True
+        )
+        return response['data']['data']
+    except Exception as e:
+        logger.error(f"Failed to retrieve secret data from {path}: {e}")
+        raise RuntimeError(f"Failed to retrieve secret from Vault path '{path}': {e}") from e
+
+
 def get_database_credentials() -> Dict[str, str]:
     vault_client = _ensure_vault_client()
-    
+
     username_key = "mira/database/username"
     password_key = "mira/database/password"
-    
+
     if username_key not in _secret_cache:
         _secret_cache[username_key] = vault_client.get_secret('mira/database', 'username')
     if password_key not in _secret_cache:
         _secret_cache[password_key] = vault_client.get_secret('mira/database', 'password')
-    
+
     return {
         'username': _secret_cache[username_key],
         'password': _secret_cache[password_key]
