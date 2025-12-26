@@ -7,6 +7,9 @@ class MIRAClient {
         this.currentTier = 'balanced';
         this.enabledDocs = [];
         this.processing = false;
+        this.pollingInterval = null;
+        this.pollingIntervalMs = 60000; // Poll every 5 seconds
+        this.lastMessageCount = 0;
 
         this.messagesContainer = document.getElementById('messagesContainer');
         this.messageInput = document.getElementById('messageInput');
@@ -66,6 +69,9 @@ class MIRAClient {
             // Restore UI display state from server
             console.log('Loading UI display state...');
             await this.loadDisplayState();
+
+            // Start polling for updates from other devices
+            this.startPolling();
 
             console.log('Initialization complete!');
 
@@ -433,9 +439,13 @@ class MIRAClient {
                     this.messagesContainer.appendChild(messageDiv);
                 });
 
+                // Track message count for polling
+                this.lastMessageCount = data.data.messages.length;
+
                 this.scrollToBottom();
             } else {
                 console.log('No stored display state found');
+                this.lastMessageCount = 0;
             }
         } catch (error) {
             console.error('Failed to load display state:', error);
@@ -489,6 +499,8 @@ class MIRAClient {
             const result = await response.json();
             if (result.success) {
                 console.log(`Saved ${messages.length} messages to server`);
+                // Update last message count after successful save
+                this.lastMessageCount = messages.length;
             } else {
                 console.error('Failed to save display state:', result);
             }
@@ -675,6 +687,91 @@ class MIRAClient {
 
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    startPolling() {
+        // Don't start multiple polling intervals
+        if (this.pollingInterval) {
+            return;
+        }
+
+        console.log(`Starting polling every ${this.pollingIntervalMs}ms for cross-device updates`);
+
+        this.pollingInterval = setInterval(async () => {
+            // Don't poll while processing a message to avoid conflicts
+            if (this.processing) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/v0/api/actions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${this.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        domain: 'ui_session',
+                        action: 'get_display'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.data && data.data.messages) {
+                    const serverMessageCount = data.data.messages.length;
+
+                    // Only update if server has more messages than we currently have
+                    if (serverMessageCount > this.lastMessageCount) {
+                        console.log(`Detected ${serverMessageCount - this.lastMessageCount} new messages from another device`);
+
+                        // Save scroll position
+                        const wasScrolledToBottom =
+                            this.messagesContainer.scrollHeight - this.messagesContainer.scrollTop <=
+                            this.messagesContainer.clientHeight + 100;
+
+                        // Clear and reload all messages
+                        this.messagesContainer.innerHTML = '';
+
+                        data.data.messages.forEach(msg => {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.className = `message message-${msg.role}`;
+
+                            if (msg.role === 'assistant' && typeof marked !== 'undefined') {
+                                messageDiv.setAttribute('data-raw-content', msg.content);
+                                messageDiv.innerHTML = marked.parse(msg.content);
+                            } else {
+                                messageDiv.textContent = msg.content;
+                            }
+
+                            this.messagesContainer.appendChild(messageDiv);
+                        });
+
+                        // Update tracked count
+                        this.lastMessageCount = serverMessageCount;
+
+                        // Only auto-scroll if user was already at bottom
+                        if (wasScrolledToBottom) {
+                            this.scrollToBottom();
+                        }
+                    }
+                }
+            } catch (error) {
+                // Silently fail - don't spam console with polling errors
+                // Only log if it's not a network issue
+                if (error.message && !error.message.includes('Failed to fetch')) {
+                    console.error('Polling error:', error);
+                }
+            }
+        }, this.pollingIntervalMs);
+    }
+
+    stopPolling() {
+        if (this.pollingInterval) {
+            console.log('Stopping polling');
+            clearInterval(this.pollingInterval);
+            this.pollingInterval = null;
+        }
     }
 }
 
