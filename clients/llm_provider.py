@@ -746,6 +746,7 @@ class LLMProvider:
                     # Stream response with real-time event emission
                     accumulated_text = ""
                     accumulated_tool_calls = {}  # {index: {"id": ..., "name": ..., "arguments": "", "thought_signature": ...}}
+                    accumulated_reasoning_details = []  # Accumulate reasoning_details for Gemini
                     finish_reason = None
 
                     for chunk in generic_client.messages.create_streaming(
@@ -763,6 +764,12 @@ class LLMProvider:
                         choice = chunk["choices"][0]
                         delta = choice.get("delta", {})
                         finish_reason = choice.get("finish_reason") or finish_reason
+
+                        # Accumulate reasoning_details if present (required by Gemini for round-trip)
+                        if chunk.get("reasoning_details"):
+                            accumulated_reasoning_details.extend(chunk["reasoning_details"])
+                        elif delta.get("reasoning_details"):
+                            accumulated_reasoning_details.extend(delta["reasoning_details"])
 
                         # Stream text content in real-time
                         if delta.get("content"):
@@ -785,7 +792,7 @@ class LLMProvider:
                                     if thought_sig:
                                         self.logger.debug(f"Captured thought_signature on tool call {idx}: {thought_sig[:30]}...")
                                     else:
-                                        self.logger.warning(f"Tool call chunk missing thought_signature. Chunk keys: {tc.get('function', {}).keys()}")
+                                        self.logger.debug(f"Tool call chunk {idx} missing thought_signature")
                                     if accumulated_tool_calls[idx]["name"]:
                                         yield ToolDetectedEvent(
                                             tool_name=accumulated_tool_calls[idx]["name"],
@@ -838,7 +845,8 @@ class LLMProvider:
                     response = GenericOpenAIResponse(
                         content=content_blocks,
                         stop_reason=stop_reason,
-                        usage={"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+                        usage={"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                        reasoning_details=accumulated_reasoning_details if accumulated_reasoning_details else []
                     )
                     last_generic_response = response
 
@@ -924,7 +932,8 @@ class LLMProvider:
 
                     assistant_msg = {"role": "assistant", "content": assistant_content}
                     # Preserve reasoning_details for round-trip (required by OpenRouter reasoning models)
-                    if hasattr(response, 'reasoning_details') and response.reasoning_details:
+                    # Gemini requires this field even if empty array - check attribute existence, not truthiness
+                    if hasattr(response, 'reasoning_details'):
                         assistant_msg["reasoning_details"] = response.reasoning_details
                     current_messages.append(assistant_msg)
                     current_messages.append({"role": "user", "content": tool_results})
@@ -1696,7 +1705,8 @@ class LLMProvider:
         }
 
         # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
-        if hasattr(message, 'reasoning_details') and message.reasoning_details:
+        # Gemini requires this field even if empty array - check attribute existence, not truthiness
+        if hasattr(message, 'reasoning_details'):
             assistant_msg["reasoning_details"] = message.reasoning_details
 
         return assistant_msg

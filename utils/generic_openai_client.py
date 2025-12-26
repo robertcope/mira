@@ -237,6 +237,7 @@ class GenericOpenAIClient:
         # Make HTTP request
         try:
             logger.debug(f"Generic OpenAI client request to {self.endpoint} with model {self.model}")
+
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
@@ -331,8 +332,6 @@ class GenericOpenAIClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        logger.debug(f"Starting streaming request to {self.endpoint}")
-
         with http_client.stream("POST", self.endpoint, json=payload, headers=headers, timeout=self.timeout) as response:
             if response.status_code >= 400:
                 error_text = response.read().decode('utf-8')
@@ -390,7 +389,6 @@ class GenericOpenAIClient:
             Messages in OpenAI format
         """
         openai_messages = []
-        logger.debug(f"Converting {len(anthropic_messages)} Anthropic messages")
 
         for msg in anthropic_messages:
             role = msg.get("role")
@@ -448,9 +446,7 @@ class GenericOpenAIClient:
                             signature = block.get("thought_signature")
                             if not signature:
                                 signature = "skip_thought_signature_validator"
-                                logger.warning(f"Tool call {block['id']} ({block['name']}) missing thought_signature, using bypass. Block keys: {list(block.keys())}")
-                            else:
-                                logger.debug(f"Tool call {block['id']} has thought_signature: {signature[:20]}...")
+                                logger.debug(f"Tool call {block['name']} missing thought_signature, using bypass")
                             tool_call["function"]["thought_signature"] = signature
                             tool_calls.append(tool_call)
                         elif block.get("type") == "thinking":
@@ -466,12 +462,12 @@ class GenericOpenAIClient:
                 if tool_calls:
                     msg_obj["tool_calls"] = tool_calls
                 # Preserve reasoning_details for round-trip (OpenRouter/Gemini requirement)
-                if msg.get("reasoning_details"):
+                # Check for key existence, not truthiness, since empty array [] is valid
+                if "reasoning_details" in msg:
                     msg_obj["reasoning_details"] = msg["reasoning_details"]
 
                 openai_messages.append(msg_obj)
 
-        logger.debug(f"Converted to {len(openai_messages)} OpenAI messages")
         return openai_messages
 
     def _convert_tools(self, anthropic_tools: List[Dict]) -> List[Dict]:
