@@ -896,6 +896,44 @@ class ContinuumRepository:
         self._ensure_active_segment(UUID(str(continuum_id)), user_id, utc_now(), db)
         return 1
 
+    def set_segment_virtual_last_message_time(
+        self,
+        continuum_id: Union[str, UUID],
+        user_id: str,
+        virtual_time: datetime
+    ) -> bool:
+        """
+        Set virtual_last_message_time on active segment sentinel.
+
+        Used to postpone segment collapse - timeout service will use this
+        timestamp if it's later than the actual last message time.
+
+        Args:
+            continuum_id: Continuum ID
+            user_id: User ID
+            virtual_time: The virtual last message timestamp to set
+
+        Returns:
+            True if segment was updated, False if no active segment found
+        """
+        db = self._get_client(user_id)
+
+        query = """
+            UPDATE messages
+            SET metadata = jsonb_set(
+                metadata,
+                '{virtual_last_message_time}',
+                to_jsonb(%s)
+            )
+            WHERE continuum_id = %s
+                AND metadata->>'is_segment_boundary' = 'true'
+                AND metadata->>'status' = 'active'
+            RETURNING id
+        """
+
+        rows = db.execute_query(query, (virtual_time.isoformat(), str(continuum_id)))
+        return bool(rows)
+
     def find_collapsed_segments(
         self,
         continuum_id: Union[str, UUID],

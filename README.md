@@ -65,7 +65,7 @@ This project would not be possible without the hard work and dedication of peopl
 
 # Installing MIRA on your local machine
 ```bash
-curl -fsSL https://raw.githubusercontent.com/taylorsatula/mira-OSS/refs/heads/main/deploy.sh -o deploy.sh && chmod +x deploy.sh && ./deploy.sh
+curl -fsSL https://raw.githubusercontent.com/taylorsatula/mira-OSS/refs/heads/main/deploy/deploy.sh -o deploy.sh && chmod +x deploy.sh && ./deploy.sh
 ```
 Thats it. Answer the configuration questions onscreen and provide your API keys. 
 The script handles:

@@ -625,10 +625,9 @@ class GenericOpenAIClient:
 
             if "context_length" in str(error_code) or "reduce the length" in error_message.lower():
                 logger.error("Generic OpenAI client context length exceeded")
-                raise ValueError(
-                    "Content too large for model context window. "
-                    "Reduce the message length or use a model with larger context."
-                )
+                # Import locally to avoid circular dependency
+                from clients.llm_provider import ContextOverflowError
+                raise ContextOverflowError(0, 200000, 'generic')
 
             # Handle tool validation failures - model tried to use unavailable tool
             # Groq returns: {"error": {"code": "tool_use_failed", "message": "attempted to call tool 'X' which was not in request.tools"}}

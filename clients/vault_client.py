@@ -217,6 +217,58 @@ def get_database_credentials() -> Dict[str, str]:
 
 
 
+def preload_secrets() -> None:
+    """
+    Load all secrets into memory cache at startup.
+
+    This prevents token expiration issues by caching everything
+    while the AppRole token is still valid.
+    """
+    vault_client = _ensure_vault_client()
+
+    # Load all API keys by reading the entire secret and caching each field
+    try:
+        response = vault_client.client.secrets.kv.v2.read_secret_version(
+            path='mira/api_keys',
+            raise_on_deleted_version=True
+        )
+        api_keys = response['data']['data']
+        for key_name, value in api_keys.items():
+            cache_key = f"mira/api_keys/{key_name}"
+            _secret_cache[cache_key] = value
+        logger.info(f"Preloaded {len(api_keys)} API keys into cache")
+    except Exception as e:
+        logger.error(f"Failed to preload API keys: {e}")
+
+    # Load database credentials
+    try:
+        response = vault_client.client.secrets.kv.v2.read_secret_version(
+            path='mira/database',
+            raise_on_deleted_version=True
+        )
+        db_secrets = response['data']['data']
+        for field, value in db_secrets.items():
+            cache_key = f"mira/database/{field}"
+            _secret_cache[cache_key] = value
+        logger.info(f"Preloaded {len(db_secrets)} database secrets into cache")
+    except Exception as e:
+        logger.error(f"Failed to preload database secrets: {e}")
+
+    # Load auth secrets
+    try:
+        response = vault_client.client.secrets.kv.v2.read_secret_version(
+            path='mira/auth',
+            raise_on_deleted_version=True
+        )
+        auth_secrets = response['data']['data']
+        for field, value in auth_secrets.items():
+            cache_key = f"mira/auth/{field}"
+            _secret_cache[cache_key] = value
+        logger.info(f"Preloaded {len(auth_secrets)} auth secrets into cache")
+    except Exception as e:
+        logger.error(f"Failed to preload auth secrets: {e}")
+
+
 # Health check function
 def test_vault_connection() -> Dict[str, Any]:
     try:

@@ -32,9 +32,8 @@ from utils.colored_logging import setup_colored_root_logging
 
 setup_colored_root_logging(log_level=logging.INFO, fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Set APScheduler loggers to DEBUG to suppress routine job execution logs
-logging.getLogger('apscheduler.executors.default').setLevel(logging.DEBUG)
-logging.getLogger('apscheduler.scheduler').setLevel(logging.DEBUG)
+# Suppress APScheduler debug noise - only show warnings and above
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +187,11 @@ async def lifespan(app: FastAPI):
     
     # Pre-initialize expensive singleton resources at startup
     logger.info("Pre-initializing singleton resources...")
-    
+
+    # Preload all Vault secrets into memory cache (prevents token expiration issues)
+    from clients.vault_client import preload_secrets
+    preload_secrets()
+
     # Initialize embeddings provider (loads mdbr-leaf-ir-asym 768d model)
     from clients.hybrid_embeddings_provider import get_hybrid_embeddings_provider
     embeddings_provider = get_hybrid_embeddings_provider()

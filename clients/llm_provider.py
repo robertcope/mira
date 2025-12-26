@@ -69,6 +69,20 @@ from cns.core.stream_events import (
 from tools.repo import ANTHROPIC_BETA_FLAGS
 
 
+class ContextOverflowError(Exception):
+    """
+    Raised when request exceeds model context window.
+
+    Used for both proactive (pre-flight estimation) and reactive (API error) detection.
+    Enables structured retry logic with remediation strategies.
+    """
+    def __init__(self, estimated_tokens: int, context_window: int, provider: str):
+        self.estimated_tokens = estimated_tokens
+        self.context_window = context_window
+        self.provider = provider
+        super().__init__(f"Context overflow: ~{estimated_tokens} tokens vs {context_window} limit ({provider})")
+
+
 class CircuitBreaker:
     """
     Simple circuit breaker for tool execution chains.
@@ -745,8 +759,8 @@ class LLMProvider:
 
                     # Stream response with real-time event emission
                     accumulated_text = ""
-                    accumulated_tool_calls = {}  # {index: {"id": ..., "name": ..., "arguments": "", "thought_signature": ...}}
-                    accumulated_reasoning_details = []  # Accumulate reasoning_details for Gemini
+                    accumulated_tool_calls = {}  # {index: {"id": ..., "name": ..., "arguments": ""}}
+                    accumulated_reasoning_details = []  # Required for OpenRouter reasoning model tool calling
                     finish_reason = None
 
                     for chunk in generic_client.messages.create_streaming(
@@ -776,7 +790,16 @@ class LLMProvider:
                             yield TextEvent(content=delta["content"])
                             accumulated_text += delta["content"]
 
-                        # Handle tool calls - accumulate arguments and thought_signature across chunks
+                        # Stream reasoning/thinking content in real-time
+                        if delta.get("reasoning"):
+                            yield ThinkingEvent(content=delta["reasoning"])
+
+                        # Accumulate reasoning_details for round-trip (required by OpenRouter reasoning models)
+                        # These must be passed back unmodified when returning tool results
+                        if delta.get("reasoning_details"):
+                            accumulated_reasoning_details.extend(delta["reasoning_details"])
+
+                        # Handle tool calls - accumulate arguments across chunks
                         if delta.get("tool_calls"):
                             for tc in delta["tool_calls"]:
                                 idx = tc["index"]
@@ -846,7 +869,7 @@ class LLMProvider:
                         content=content_blocks,
                         stop_reason=stop_reason,
                         usage={"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
-                        reasoning_details=accumulated_reasoning_details if accumulated_reasoning_details else []
+                        reasoning_details=accumulated_reasoning_details or None
                     )
                     last_generic_response = response
 
@@ -1721,6 +1744,14 @@ class LLMProvider:
             self.logger.warning(f"Container expired or not found: {message}")
             self.logger.warning("A new container will be created on next request with file upload")
             # Fall through to general error handling - container_id will be replaced on next file upload
+
+        # Check for context length exceeded (400 with specific patterns)
+        if status_code == 400:
+            error_lower = message.lower()
+            if "prompt is too long" in error_lower or "context" in error_lower or "too many tokens" in error_lower:
+                self.logger.error(f"Anthropic context length exceeded: {message}")
+                yield ErrorEvent(error="Request too large for model context window")
+                raise ContextOverflowError(0, config.api.context_window_tokens, 'anthropic')
 
         if status_code == 401:
             self.logger.error("Authentication failed")

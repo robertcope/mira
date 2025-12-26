@@ -399,6 +399,71 @@ class TestActionsEndpointConversationDomain:
         assert data["success"] is False
         assert "date" in data["error"]["message"].lower()
 
+    def test_postpone_collapse_action(self, authenticated_client: TestClient):
+        """Verify postpone_collapse action sets virtual last message time."""
+        response = authenticated_client.post(
+            "/v0/v0/api/actions",
+            json={
+                "domain": "continuum",
+                "action": "postpone_collapse",
+                "data": {
+                    "minutes": 30
+                }
+            }
+        )
+
+        # Should succeed if there's an active segment, or fail with NotFound if not
+        assert response.status_code in [200, 404]
+        data = response.json()
+        if response.status_code == 200:
+            assert data["success"] is True
+            assert "postponed" in data["data"]
+            assert data["data"]["postponed"] is True
+            assert data["data"]["minutes"] == 30
+            assert "virtual_last_message_time" in data["data"]
+
+    def test_postpone_collapse_requires_minutes(self, authenticated_client: TestClient):
+        """Verify postpone_collapse requires minutes field."""
+        response = authenticated_client.post(
+            "/v0/v0/api/actions",
+            json={
+                "domain": "continuum",
+                "action": "postpone_collapse",
+                "data": {}
+            }
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["success"] is False
+        assert "minutes" in data["error"]["message"].lower()
+
+    def test_postpone_collapse_validates_minutes_range(self, authenticated_client: TestClient):
+        """Verify postpone_collapse validates minutes is between 1 and 1440."""
+        # Test below minimum
+        response = authenticated_client.post(
+            "/v0/v0/api/actions",
+            json={
+                "domain": "continuum",
+                "action": "postpone_collapse",
+                "data": {"minutes": 0}
+            }
+        )
+        assert response.status_code == 400
+        assert "1 and 1440" in response.json()["error"]["message"]
+
+        # Test above maximum
+        response = authenticated_client.post(
+            "/v0/v0/api/actions",
+            json={
+                "domain": "continuum",
+                "action": "postpone_collapse",
+                "data": {"minutes": 1441}
+            }
+        )
+        assert response.status_code == 400
+        assert "1 and 1440" in response.json()["error"]["message"]
+
 
 class TestActionsEndpointDomainKnowledgeDomain:
     """Test /actions endpoint with domain_knowledge domain."""

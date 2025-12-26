@@ -1622,6 +1622,18 @@ class ContinuumDomainHandler(BaseDomainHandler):
             "required": [],
             "optional": [],
             "types": {}
+        },
+        "postpone_collapse": {
+            "required": ["minutes"],
+            "optional": [],
+            "types": {
+                "minutes": int
+            }
+        },
+        "get_segment_status": {
+            "required": [],
+            "optional": [],
+            "types": {}
         }
     }
 
@@ -1720,6 +1732,99 @@ class ContinuumDomainHandler(BaseDomainHandler):
                 "summary": collapsed_sentinel.metadata.get("segment_summary"),
                 "title": collapsed_sentinel.metadata.get("display_title"),
                 "message": "Segment collapsed successfully"
+            }
+
+        elif action == "postpone_collapse":
+            from cns.infrastructure.continuum_pool import get_continuum_pool
+            from cns.infrastructure.continuum_repository import get_continuum_repository
+            from datetime import timedelta
+
+            minutes = data.get("minutes")
+            if not (1 <= minutes <= 1440):
+                raise ValidationError("minutes must be between 1 and 1440 (24 hours)")
+
+            # Get user's continuum and active segment
+            continuum_pool = get_continuum_pool()
+            continuum = continuum_pool.get_or_create()
+
+            continuum_repo = get_continuum_repository()
+            sentinel = continuum_repo.find_active_segment(continuum.id, self.user_id)
+
+            if not sentinel:
+                raise NotFoundError("segment", "active")
+
+            segment_id = sentinel.metadata.get("segment_id")
+
+            # Set virtual last message time to postpone collapse
+            virtual_time = utc_now() + timedelta(minutes=minutes)
+            success = continuum_repo.set_segment_virtual_last_message_time(
+                continuum.id,
+                self.user_id,
+                virtual_time
+            )
+
+            if not success:
+                raise ValidationError("Failed to set postpone - no active segment found")
+
+            return {
+                "postponed": True,
+                "segment_id": segment_id,
+                "virtual_last_message_time": format_utc_iso(virtual_time),
+                "minutes": minutes,
+                "message": f"Segment collapse postponed for {minutes} minutes"
+            }
+
+        elif action == "get_segment_status":
+            from cns.infrastructure.continuum_pool import get_continuum_pool
+            from cns.infrastructure.continuum_repository import get_continuum_repository
+            from datetime import timedelta
+            from config import config
+
+            # Get user's continuum and active segment
+            continuum_pool = get_continuum_pool()
+            continuum = continuum_pool.get_or_create()
+
+            continuum_repo = get_continuum_repository()
+            sentinel = continuum_repo.find_active_segment(continuum.id, self.user_id)
+
+            if not sentinel:
+                return {
+                    "has_active_segment": False,
+                    "segment_id": None,
+                    "collapse_at": None,
+                    "is_postponed": False
+                }
+
+            segment_id = sentinel.metadata.get("segment_id")
+            virtual_time_str = sentinel.metadata.get("virtual_last_message_time")
+
+            # Get last real message time
+            last_message = continuum_repo.get_latest_message(continuum.id, self.user_id)
+            if last_message:
+                last_activity = last_message.created_at
+            else:
+                last_activity = sentinel.created_at
+
+            # Check if virtual time extends beyond actual activity
+            is_postponed = False
+            if virtual_time_str:
+                from datetime import datetime
+                virtual_time = datetime.fromisoformat(virtual_time_str)
+                if virtual_time > last_activity:
+                    last_activity = virtual_time
+                    is_postponed = True
+
+            # Calculate collapse time
+            timeout_minutes = config.system.segment_timeout
+            collapse_at = last_activity + timedelta(minutes=timeout_minutes)
+
+            return {
+                "has_active_segment": True,
+                "segment_id": segment_id,
+                "last_activity": format_utc_iso(last_activity),
+                "collapse_at": format_utc_iso(collapse_at),
+                "timeout_minutes": timeout_minutes,
+                "is_postponed": is_postponed
             }
 
         else:

@@ -44,8 +44,8 @@ class ApiConfig(BaseModel):
     emergency_fallback_model: str = Field(default="qwen3:1.7b", description="Model to use during emergency fallback")
     emergency_fallback_recovery_minutes: int = Field(default=5, description="Minutes to wait before testing Anthropic recovery")
 
-    # Generic provider thinking display (for future K2-Thinking support)
-    show_generic_thinking: bool = Field(default=False, description="Show thinking blocks from generic providers to end user (always kept in history)")
+    # Generic provider thinking display
+    show_generic_thinking: bool = Field(default=True, description="Show thinking blocks from generic providers to end user")
 
     # Fingerprint generation settings (query expansion for memory retrieval)
     analysis_enabled: bool = Field(default=True, description="Enable fingerprint generation for retrieval")
@@ -528,5 +528,29 @@ class LatticeConfig(BaseModel):
     timeout: int = Field(
         default=30,
         description="HTTP request timeout in seconds"
+    )
+
+
+class ContextConfig(BaseModel):
+    """
+    Context window management configuration.
+
+    Controls proactive token estimation and overflow remediation behavior.
+    """
+    topic_drift_window_size: int = Field(
+        default=3,
+        ge=2,
+        description="Number of messages per sliding window for topic drift detection"
+    )
+    topic_drift_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Cosine similarity below this value indicates topic change"
+    )
+    overflow_fallback_prune_count: int = Field(
+        default=5,
+        ge=1,
+        description="Number of oldest messages to prune when no topic drift boundary found"
     )
 

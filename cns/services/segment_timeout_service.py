@@ -175,6 +175,18 @@ class SegmentTimeoutService:
             )
             return False
 
+        # Check for virtual last message time (from postpone_collapse action)
+        # Use MAX(actual, virtual) to determine effective end time
+        virtual_time_str = segment['metadata'].get('virtual_last_message_time')
+        if virtual_time_str:
+            virtual_time = datetime.fromisoformat(virtual_time_str)
+            if virtual_time > end_time:
+                segment_id = segment['metadata'].get('segment_id')
+                logger.debug(
+                    f"Segment {segment_id} using virtual_last_message_time: {virtual_time}"
+                )
+                end_time = virtual_time
+
         # Calculate inactive duration
         inactive_duration = current_time - end_time
         inactive_minutes = inactive_duration.total_seconds() / 60

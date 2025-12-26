@@ -324,7 +324,7 @@ populate_secrets() {
     log_info "Writing API keys..."
     vault kv put secret/mira/api_keys \
         anthropic_key="${ANTHROPIC_KEY}" \
-        openrouter_key="${OPENROUTER_KEY}" \
+        provider_key="${PROVIDER_KEY:-${OPENROUTER_KEY:-}}" \
         kagi_api_key="${KAGI_KEY}" \
         letta_key="${LETTA_KEY:-}" \
         > /dev/null
