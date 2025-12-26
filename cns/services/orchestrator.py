@@ -421,11 +421,16 @@ class ContinuumOrchestrator:
         logger.info(f"Emotion extracted: {parsed_tags.get('emotion')}")
         logger.info(f"Emotion tag in clean_text: {'<mira:my_emotion>' in clean_response_text}")
 
-        # Add final assistant response to continuum FIRST (before topic change handling)
-        # Validate response is not blank before saving
+        # Handle tool-only responses (empty text but tools were used)
         if not clean_response_text or not clean_response_text.strip():
-            logger.error("Attempted to save blank assistant response - rejecting")
-            raise ValueError("Assistant response cannot be blank or empty. This may indicate an API error.")
+            if tool_calls:
+                # Tool-only response - use checkmark as minimal feedback
+                clean_response_text = "✓"
+                logger.info(f"Tool-only response detected ({len(tool_calls)} tool(s)) - using minimal text marker")
+            else:
+                # Empty response with no tools is an error
+                logger.error("Attempted to save blank assistant response with no tool usage - rejecting")
+                raise ValueError("Assistant response cannot be blank or empty. This may indicate an API error.")
 
         assistant_metadata = {
             "referenced_memories": parsed_tags.get('referenced_memories', []),
