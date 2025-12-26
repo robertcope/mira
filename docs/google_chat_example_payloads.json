@@ -1,0 +1,232 @@
+{
+  "description": "Example Google Chat webhook payloads for testing and development",
+  "examples": {
+    "simple_message": {
+      "type": "MESSAGE",
+      "message": {
+        "text": "Hello MIRA, what's the weather today?",
+        "sender": {
+          "name": "users/12345678901234567890",
+          "displayName": "Taylor",
+          "email": "taylor@workspace.com",
+          "type": "HUMAN"
+        },
+        "createTime": "2025-12-26T10:30:00.000000Z",
+        "name": "spaces/AAAAAAAAAAA/messages/xyz123"
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com",
+        "type": "HUMAN"
+      },
+      "space": {
+        "name": "spaces/AAAAAAAAAAA",
+        "type": "DM"
+      },
+      "token": "bearer-token-for-attachment-downloads"
+    },
+    "message_with_image": {
+      "type": "MESSAGE",
+      "message": {
+        "text": "Can you analyze this image?",
+        "sender": {
+          "name": "users/12345678901234567890",
+          "displayName": "Taylor",
+          "email": "taylor@workspace.com",
+          "type": "HUMAN"
+        },
+        "attachment": [
+          {
+            "name": "photo.jpg",
+            "contentType": "image/jpeg",
+            "downloadUrl": "https://chat.googleapis.com/v1/media/...",
+            "thumbnailUrl": "https://chat.googleapis.com/v1/media/thumb/..."
+          }
+        ]
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com"
+      },
+      "space": {
+        "name": "spaces/AAAAAAAAAAA",
+        "type": "DM"
+      },
+      "token": "bearer-token-for-attachment-downloads"
+    },
+    "message_with_pdf": {
+      "type": "MESSAGE",
+      "message": {
+        "text": "Please summarize this document",
+        "sender": {
+          "name": "users/12345678901234567890",
+          "displayName": "Taylor",
+          "email": "taylor@workspace.com",
+          "type": "HUMAN"
+        },
+        "attachment": [
+          {
+            "name": "report.pdf",
+            "contentType": "application/pdf",
+            "downloadUrl": "https://chat.googleapis.com/v1/media/..."
+          }
+        ]
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com"
+      },
+      "space": {
+        "name": "spaces/AAAAAAAAAAA",
+        "type": "DM"
+      },
+      "token": "bearer-token-for-attachment-downloads"
+    },
+    "added_to_space": {
+      "type": "ADDED_TO_SPACE",
+      "space": {
+        "name": "spaces/AAAAAAAAAAA",
+        "type": "DM"
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com",
+        "type": "HUMAN"
+      }
+    },
+    "removed_from_space": {
+      "type": "REMOVED_FROM_SPACE",
+      "space": {
+        "name": "spaces/AAAAAAAAAAA",
+        "type": "DM"
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com",
+        "type": "HUMAN"
+      }
+    },
+    "group_chat_mention": {
+      "type": "MESSAGE",
+      "message": {
+        "text": "@MIRA can you help with this task?",
+        "sender": {
+          "name": "users/12345678901234567890",
+          "displayName": "Taylor",
+          "email": "taylor@workspace.com",
+          "type": "HUMAN"
+        },
+        "annotations": [
+          {
+            "type": "USER_MENTION",
+            "startIndex": 0,
+            "length": 5,
+            "userMention": {
+              "user": {
+                "name": "users/app-bot-id",
+                "displayName": "MIRA",
+                "type": "BOT"
+              },
+              "type": "MENTION"
+            }
+          }
+        ]
+      },
+      "user": {
+        "name": "users/12345678901234567890",
+        "displayName": "Taylor",
+        "email": "taylor@workspace.com"
+      },
+      "space": {
+        "name": "spaces/BBBBBBBBBBB",
+        "type": "ROOM"
+      },
+      "token": "bearer-token"
+    }
+  },
+  "response_examples": {
+    "simple_response": {
+      "cardsV2": [
+        {
+          "cardId": "mira-response",
+          "card": {
+            "sections": [
+              {
+                "widgets": [
+                  {
+                    "textParagraph": {
+                      "text": "This is MIRA's response to your question."
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "response_with_metadata": {
+      "cardsV2": [
+        {
+          "cardId": "mira-response",
+          "card": {
+            "sections": [
+              {
+                "widgets": [
+                  {
+                    "textParagraph": {
+                      "text": "This is MIRA's response using web_tool to fetch weather data."
+                    }
+                  },
+                  {
+                    "textParagraph": {
+                      "text": "<font color=\"#666666\">🔧 Tools: web_tool • ⏱️ 2341ms • 🧠 3 memories referenced</font>"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "error_response": {
+      "cardsV2": [
+        {
+          "cardId": "mira-error",
+          "card": {
+            "sections": [
+              {
+                "widgets": [
+                  {
+                    "textParagraph": {
+                      "text": "<font color=\"#d93025\">❌ Message cannot be empty</font>"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "simple_text": {
+      "text": "👋 Hi! I'm MIRA, your AI assistant. Send me a message to get started!"
+    }
+  },
+  "testing": {
+    "curl_test_added_to_space": "curl -X POST https://your-domain.com/v0/api/google-chat -H 'Content-Type: application/json' -d '{\"type\":\"ADDED_TO_SPACE\",\"space\":{\"name\":\"spaces/test\"},\"user\":{\"name\":\"users/test\"}}'",
+    "curl_test_message": "curl -X POST https://your-domain.com/v0/api/google-chat -H 'Content-Type: application/json' -d '{\"type\":\"MESSAGE\",\"message\":{\"text\":\"Hello MIRA\",\"sender\":{\"name\":\"users/123\",\"displayName\":\"Test\"}},\"user\":{\"name\":\"users/123\"},\"space\":{\"name\":\"spaces/ABC\",\"type\":\"DM\"},\"token\":\"test-token\"}'",
+    "notes": [
+      "Replace 'your-domain.com' with your actual MIRA server domain",
+      "Bearer token in 'token' field is used for attachment downloads",
+      "For testing with real Google Chat, use the Google Chat UI directly",
+      "Webhook must use HTTPS (Google Chat requirement)"
+    ]
+  }
+}
