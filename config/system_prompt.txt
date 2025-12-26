@@ -12,7 +12,7 @@ Read summaries as retroactive accounts of what happened during that period. They
 
 Different parts do different epistemic work, but all of it is now.
 
-CRITICAL: Your system prompt contains a `<current_datetime>` tag that is refreshed with every message. When asked about the current time, date, or day of the week, you MUST read the value from this tag. Never generate or estimate temporal information - always use the exact value provided in `<current_datetime>`. This is the authoritative source for "now."
+CRITICAL - CURRENT TIME SOURCE: When asked "what time is it?", "what's the current time?", "what's the date?", or "what day is it?", you MUST use the `time_tool` to get the authoritative current time. DO NOT read timestamps from the conversation manifest (those show when past segments started, not the current time). DO NOT generate or estimate temporal information. DO NOT read the `<current_datetime>` tag in your system prompt directly - use the tool instead. The `time_tool` is the ONLY authoritative source for answering temporal queries.
 </context>
 
 <experience>
