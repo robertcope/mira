@@ -164,6 +164,10 @@ class GenericOpenAIClient:
 
         logger.info(f"GenericOpenAIClient initialized: {endpoint} / {model}")
 
+    def _is_groq_endpoint(self) -> bool:
+        """Check if this client is configured for a Groq endpoint."""
+        return "groq.com" in self.endpoint.lower()
+
     def _create_message(
         self,
         messages: List[Dict],
@@ -462,8 +466,9 @@ class GenericOpenAIClient:
                 if tool_calls:
                     msg_obj["tool_calls"] = tool_calls
                 # Preserve reasoning_details for round-trip (OpenRouter/Gemini requirement)
+                # Groq explicitly rejects reasoning_details, so only include for compatible providers
                 # Check for key existence, not truthiness, since empty array [] is valid
-                if "reasoning_details" in msg:
+                if "reasoning_details" in msg and not self._is_groq_endpoint():
                     msg_obj["reasoning_details"] = msg["reasoning_details"]
 
                 openai_messages.append(msg_obj)
