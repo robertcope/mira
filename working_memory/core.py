@@ -114,10 +114,15 @@ class WorkingMemory:
         self.event_bus.publish(SystemPromptComposedEvent.create(
             continuum_id=event.continuum_id,
             cached_content=structured['cached_content'],
-            non_cached_content=structured['non_cached_content']
+            non_cached_content=structured['non_cached_content'],
+            notification_center=structured['notification_center']
         ))
 
-        logger.info(f"Composed and published structured system prompt (cached: {len(structured['cached_content'])} chars, non-cached: {len(structured['non_cached_content'])} chars)")
+        logger.info(
+            f"Composed system prompt: cached {len(structured['cached_content'])} chars, "
+            f"non-cached {len(structured['non_cached_content'])} chars, "
+            f"notification center {len(structured['notification_center'])} chars"
+        )
     
     def _handle_update_trinket(self, event) -> None:
         """
@@ -163,12 +168,18 @@ class WorkingMemory:
         Handle trinket content updates.
 
         Trinkets publish their sections which we add to the composer.
+        Placement determines routing: "system" or "notification".
         """
         from cns.core.events import TrinketContentEvent
         event: TrinketContentEvent
 
-        self.composer.add_section(event.variable_name, event.content, cache_policy=event.cache_policy)
-        logger.debug(f"Received content for '{event.variable_name}' from {event.trinket_name} (cache={event.cache_policy})")
+        self.composer.add_section(
+            event.variable_name,
+            event.content,
+            cache_policy=event.cache_policy,
+            placement=event.placement
+        )
+        logger.debug(f"Received content for '{event.variable_name}' from {event.trinket_name} (placement={event.placement})")
     
     def publish_trinket_update(self, target_trinket: str, context: Optional[Dict] = None) -> None:
         """

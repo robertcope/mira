@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 class ProactiveMemoryTrinket(EventAwareTrinket):
     """
-    Displays surfaced memories in working memory.
-    
+    Displays surfaced memories in the notification center.
+
     This trinket formats memories passed via context into
-    a structured section for the system prompt.
+    a structured section for the sliding notification center.
     """
     
     def __init__(self, event_bus, working_memory):

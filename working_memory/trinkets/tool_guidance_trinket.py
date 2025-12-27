@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class ToolGuidanceTrinket(EventAwareTrinket):
     """
     Manages tool hints and guidance for the system prompt.
-    
+
     Collects hints from enabled tools that provide usage tips
     beyond their function definitions.
     """

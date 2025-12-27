@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 class ReminderManager(EventAwareTrinket):
     """
-    Manages reminder information for the system prompt.
-    
+    Manages reminder information for the notification center.
+
     Fetches active reminders from the reminder tool when requested.
     """
     

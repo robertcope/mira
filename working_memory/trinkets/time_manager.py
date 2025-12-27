@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 class TimeManager(EventAwareTrinket):
     """
-    Manages current date/time information for the system prompt.
-    
+    Manages current date/time information for the notification center.
+
     Always generates fresh timestamp when requested.
     """
     

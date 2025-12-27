@@ -162,7 +162,6 @@ class CNSIntegrationFactory:
             from working_memory.trinkets.manifest_trinket import ManifestTrinket
             from working_memory.trinkets.proactive_memory_trinket import ProactiveMemoryTrinket
             from working_memory.trinkets.tool_guidance_trinket import ToolGuidanceTrinket
-            from working_memory.trinkets.punchclock_trinket import PunchclockTrinket
             from working_memory.trinkets.domaindoc_trinket import DomaindocTrinket
             from working_memory.trinkets.getcontext_trinket import GetContextTrinket
 
@@ -172,7 +171,6 @@ class CNSIntegrationFactory:
             ManifestTrinket(event_bus, self._working_memory)
             ProactiveMemoryTrinket(event_bus, self._working_memory)
             ToolGuidanceTrinket(event_bus, self._working_memory)
-            PunchclockTrinket(event_bus, self._working_memory)
             DomaindocTrinket(event_bus, self._working_memory)
             GetContextTrinket(event_bus, self._working_memory)
             

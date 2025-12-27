@@ -79,6 +79,13 @@ class ContinuumOrchestrator:
         # Store composed prompt sections when received via event
         self._cached_content = None
         self._non_cached_content = None
+        self._notification_center = None
+
+        # In-memory token tracking for context overflow detection
+        # Tracks actual input tokens from previous turn for accurate estimation
+        self._last_turn_usage: Dict[str, int] = {}  # {continuum_id: input_tokens}
+        # One-shot context trim from async LLM judgment (future extension)
+        self._pending_context_trim: Dict[str, int] = {}  # {continuum_id: trim_index}
 
         # In-memory token tracking for context overflow detection
         # Tracks actual input tokens from previous turn for accurate estimation
@@ -230,6 +237,7 @@ class ContinuumOrchestrator:
         # Reset and wait for synchronous event handler to populate
         self._cached_content = None
         self._non_cached_content = None
+        self._notification_center = None
         self.event_bus.publish(ComposeSystemPromptEvent.create(
             continuum_id=str(continuum.id),
             base_prompt=system_prompt
@@ -237,6 +245,7 @@ class ContinuumOrchestrator:
         # Since events are synchronous, content should be ready
         cached_content = self._cached_content or ""
         non_cached_content = self._non_cached_content or ""
+        notification_center = self._notification_center or ""
         
         # Get available tools - only currently enabled tools
         # With invokeother_tool, the LLM can see all available tools in working memory
@@ -270,8 +279,39 @@ class ContinuumOrchestrator:
                 # No cache_control - don't cache dynamic content
             })
 
-        # Pass structured system content
-        complete_messages = [{"role": "system", "content": system_blocks}] + messages
+        # Build complete message array with notification center injection
+        # Structure: SYSTEM -> CONVERSATION [cached] -> delimiter -> NOTIFICATION CENTER -> CURRENT USER
+        # The delimiter user message provides the opening frame for the notification center,
+        # making the role boundary invisible - it all reads as one cohesive infrastructure block
+        if notification_center and messages:
+            # Separate current user message from conversation history
+            # The current user message was just added to continuum, so it's the last message
+            current_user_msg = messages[-1]
+            history_messages = messages[:-1]
+
+            complete_messages = [
+                {"role": "system", "content": system_blocks},
+                *history_messages,
+                {"role": "user", "content": "═" * 60},
+                {"role": "assistant", "content": notification_center},
+                current_user_msg,
+            ]
+            logger.debug(
+                f"Injected notification center: {len(history_messages)} history msgs + "
+                f"delimiter + notification center ({len(notification_center)} chars)"
+            )
+        else:
+            # No notification center or no messages - use original structure
+            complete_messages = [{"role": "system", "content": system_blocks}] + messages
+
+        # Initialize messages for LLM (may be modified by overflow remediation)
+        messages_for_llm = complete_messages
+
+        # Check for one-shot adjustment from previous async LLM judgment
+        one_shot_trim = self._pending_context_trim.pop(str(continuum.id), None)
+        if one_shot_trim:
+            logger.info(f"Applying one-shot trim from async LLM judgment: {one_shot_trim} messages")
+            messages_for_llm = messages_for_llm[:1] + messages_for_llm[one_shot_trim + 1:]
 
         # Initialize messages for LLM (may be modified by overflow remediation)
         messages_for_llm = complete_messages
@@ -610,7 +650,12 @@ class ContinuumOrchestrator:
         event: SystemPromptComposedEvent
         self._cached_content = event.cached_content
         self._non_cached_content = event.non_cached_content
-        logger.debug(f"Received structured system prompt (cached: {len(event.cached_content)} chars, non-cached: {len(event.non_cached_content)} chars)")
+        self._notification_center = event.notification_center
+        logger.debug(
+            f"Received system prompt: cached {len(event.cached_content)} chars, "
+            f"non-cached {len(event.non_cached_content)} chars, "
+            f"notification center {len(event.notification_center)} chars"
+        )
 
 
     def _publish_events(self, events: List[ContinuumEvent]):

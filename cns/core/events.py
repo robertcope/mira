@@ -164,9 +164,16 @@ class SystemPromptComposedEvent(WorkingMemoryEvent):
     """System prompt has been composed and is ready for use."""
     cached_content: str
     non_cached_content: str
+    notification_center: str  # Dynamic content for sliding assistant message
 
     @classmethod
-    def create(cls, continuum_id: str, cached_content: str, non_cached_content: str) -> 'SystemPromptComposedEvent':
+    def create(
+        cls,
+        continuum_id: str,
+        cached_content: str,
+        non_cached_content: str,
+        notification_center: str = ""
+    ) -> 'SystemPromptComposedEvent':
         """Create system prompt composed event with auto-generated metadata."""
         from utils.user_context import get_current_user_id
         user_id = get_current_user_id()
@@ -176,7 +183,8 @@ class SystemPromptComposedEvent(WorkingMemoryEvent):
             event_id=str(uuid4()),
             occurred_at=utc_now(),
             cached_content=cached_content,
-            non_cached_content=non_cached_content
+            non_cached_content=non_cached_content,
+            notification_center=notification_center
         )
 
 
@@ -208,9 +216,18 @@ class TrinketContentEvent(WorkingMemoryEvent):
     content: str
     trinket_name: str
     cache_policy: bool = False  # Default to no caching
+    placement: str = "system"   # "system" or "notification" - where content appears
 
     @classmethod
-    def create(cls, continuum_id: str, variable_name: str, content: str, trinket_name: str, cache_policy: bool = False) -> 'TrinketContentEvent':
+    def create(
+        cls,
+        continuum_id: str,
+        variable_name: str,
+        content: str,
+        trinket_name: str,
+        cache_policy: bool = False,
+        placement: str = "system"
+    ) -> 'TrinketContentEvent':
         """Create trinket content event with auto-generated metadata."""
         from utils.user_context import get_current_user_id
         user_id = get_current_user_id()
@@ -222,7 +239,8 @@ class TrinketContentEvent(WorkingMemoryEvent):
             variable_name=variable_name,
             content=content,
             trinket_name=trinket_name,
-            cache_policy=cache_policy
+            cache_policy=cache_policy,
+            placement=placement
         )
 
 
