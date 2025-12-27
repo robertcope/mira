@@ -422,26 +422,9 @@ async def google_chat_webhook(request: Request):
             )
 
             elapsed_ms = int((utc_now() - request_start).total_seconds() * 1000)
-            logger.info(f"[Google Chat] Message processed in {elapsed_ms}ms, sending response")
+            logger.info(f"[Google Chat] Message processed in {elapsed_ms}ms, sending Card response")
 
-            # Extract response text for simple text response
-            # Google Chat Apps work better with plain text for conversational AI
-            import json
-            logger.info(f"[Google Chat] Full response: {json.dumps(response_card, indent=2)}")
-
-            # Extract just the text from the card
-            card_obj = response_card.get("cardsV2", [{}])[0].get("card", {})
-            sections = card_obj.get("sections", [])
-            widgets = sections[0].get("widgets", []) if sections else []
-            text_widget = widgets[0] if widgets else {}
-            response_text = text_widget.get("textParagraph", {}).get("text", "Response generated")
-
-            # Return simple text response
-            simple_response = {"text": response_text}
-
-            logger.info(f"[Google Chat] Sending text response: {json.dumps(simple_response, indent=2)}")
-
-            return JSONResponse(content=simple_response, media_type="application/json")
+            return JSONResponse(content=response_card, media_type="application/json")
 
         # Legacy webhook format (simple webhooks, kept for backwards compatibility)
         event_type = event_data.get("type")

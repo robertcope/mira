@@ -5,6 +5,7 @@ Converts MIRA's internal response format to Google Chat Card messages.
 Reference: https://developers.google.com/chat/api/guides/message-formats/cards
 """
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -19,21 +20,42 @@ def format_response_as_card(
     Format MIRA response as Google Chat Card message.
 
     Args:
-        response_text: The assistant's response text
+        response_text: The assistant's response text (markdown format)
         metadata: Optional metadata (tools_used, memories, etc.)
         include_metadata: Whether to append metadata footer to card
 
     Returns:
         Google Chat message payload with cardsV2 format
     """
-    # Build main text section
-    widgets: List[Dict[str, Any]] = [
-        {
-            "textParagraph": {
-                "text": response_text
-            }
-        }
-    ]
+    # Strip MIRA semantic tags (like <mira:my_emotion>emoji</mira:my_emotion>)
+    # These are preserved for frontend extraction but shouldn't appear in Google Chat
+    # Extract emotion emoji before removing tags
+    emotion_match = re.search(r'<mira:my_emotion>\s*([^\s<]+)\s*</mira:my_emotion>', response_text, re.IGNORECASE)
+    emotion_emoji = emotion_match.group(1) if emotion_match else None
+
+    # Remove all mira tags
+    clean_text = re.sub(r'<mira:[^>\/\s]+(?:\s[^>]*)?>[\s\S]*?</mira:[^>]+>', '', response_text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'<mira:[^>]*\/>', '', clean_text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'</?mira:[^>]*>', '', clean_text, flags=re.IGNORECASE)
+
+    # Optionally append emotion emoji at the end
+    if emotion_emoji:
+        clean_text = clean_text.rstrip() + f' {emotion_emoji}'
+
+    # Split response into paragraphs - each paragraph should be its own textParagraph widget
+    # Split on double newlines (paragraph breaks) but preserve the content
+    paragraphs = clean_text.split('\n\n')
+
+    # Build widgets array with one textParagraph per paragraph
+    widgets: List[Dict[str, Any]] = []
+    for paragraph in paragraphs:
+        if paragraph.strip():  # Skip empty paragraphs
+            widgets.append({
+                "textParagraph": {
+                    "text": paragraph.strip(),
+                    "textSyntax": "MARKDOWN"
+                }
+            })
 
     # Add metadata footer if requested and available
     if include_metadata and metadata:
