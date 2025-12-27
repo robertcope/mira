@@ -150,10 +150,14 @@ class GoogleChatHandler(BaseHandler):
             # Chat App format: attachments in messagePayload.message.attachment
             message = event_data.get("chat", {}).get("messagePayload", {}).get("message", {})
             attachments = message.get("attachment", [])
+            logger.info(f"[Google Chat] Chat App format detected, found {len(attachments)} attachments")
         else:
             # Legacy webhook format
             attachments = event_data.get("message", {}).get("attachment", [])
+            logger.info(f"[Google Chat] Legacy webhook format detected, found {len(attachments)} attachments")
+
         if attachments:
+            logger.info(f"[Google Chat] Processing attachment: {attachments[0]}")
             # Process first attachment only (Google Chat typically sends one at a time)
             attachment = attachments[0]
             attachment_type = attachment.get("contentType", "")
@@ -165,27 +169,46 @@ class GoogleChatHandler(BaseHandler):
                 import requests
                 bearer_token = event_data.get("token")
                 if not bearer_token:
-                    logger.warning("No bearer token for attachment download")
-                else:
+                    logger.error("[Google Chat] No bearer token found in event_data for attachment download")
+                    raise ValidationError("Cannot download attachment: missing authentication token")
+
+                logger.info(f"[Google Chat] Downloading attachment from {download_url[:50]}...")
+                try:
                     response = requests.get(
                         download_url,
-                        headers={"Authorization": f"Bearer {bearer_token}"}
+                        headers={"Authorization": f"Bearer {bearer_token}"},
+                        timeout=30
                     )
-                    if response.status_code == 200:
-                        attachment_bytes = response.content
+                    logger.info(f"[Google Chat] Attachment download response: status={response.status_code}")
 
-                        # Process as image or document
-                        if attachment_type in SUPPORTED_IMAGE_FORMATS:
-                            if len(attachment_bytes) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
-                                raise ValidationError(f"Image exceeds {MAX_IMAGE_SIZE_MB}MB")
-                            try:
-                                compressed_image = compress_image(attachment_bytes, attachment_type)
-                            except ValueError as e:
-                                raise ValidationError(f"Image processing failed: {e}")
+                    if response.status_code != 200:
+                        logger.error(f"[Google Chat] Attachment download failed: {response.status_code} {response.text}")
+                        raise ValidationError(f"Failed to download attachment: HTTP {response.status_code}")
 
-                        elif attachment_type in SUPPORTED_DOCUMENT_FORMATS:
-                            # Will process document after getting orchestrator (needs FilesManager)
-                            pass
+                    attachment_bytes = response.content
+                    logger.info(f"[Google Chat] Downloaded {len(attachment_bytes)} bytes, type={attachment_type}")
+
+                    # Process as image or document
+                    if attachment_type in SUPPORTED_IMAGE_FORMATS:
+                        if len(attachment_bytes) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+                            raise ValidationError(f"Image exceeds {MAX_IMAGE_SIZE_MB}MB")
+                        try:
+                            logger.info(f"[Google Chat] Compressing image of type {attachment_type}")
+                            compressed_image = compress_image(attachment_bytes, attachment_type)
+                            logger.info(f"[Google Chat] Image compressed successfully")
+                        except ValueError as e:
+                            logger.error(f"[Google Chat] Image processing failed: {e}", exc_info=True)
+                            raise ValidationError(f"Image processing failed: {e}")
+
+                    elif attachment_type in SUPPORTED_DOCUMENT_FORMATS:
+                        # Will process document after getting orchestrator (needs FilesManager)
+                        logger.info(f"[Google Chat] Document attachment detected, will process after orchestrator setup")
+                    else:
+                        logger.warning(f"[Google Chat] Unsupported attachment type: {attachment_type}")
+
+                except requests.RequestException as e:
+                    logger.error(f"[Google Chat] Network error downloading attachment: {e}", exc_info=True)
+                    raise ValidationError(f"Failed to download attachment: {e}")
 
         # Acquire user lock (one request at a time per user)
         if not _user_request_lock.acquire(user_id):

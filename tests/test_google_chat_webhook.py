@@ -216,5 +216,198 @@ def test_unknown_event_type(client):
     assert data == {}
 
 
+@patch('cns.api.google_chat.get_orchestrator')
+@patch('cns.api.google_chat.get_continuum_pool')
+@patch('cns.api.google_chat._user_request_lock')
+@patch('cns.api.google_chat.requests.get')
+@patch('cns.api.google_chat.compress_image')
+def test_message_with_image_attachment(mock_compress, mock_requests_get, mock_lock, mock_pool, mock_orchestrator, client):
+    """Test MESSAGE event with image attachment downloads and processes image."""
+    # Mock image download
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.content = b"fake-image-bytes"
+    mock_requests_get.return_value = mock_response
+
+    # Mock image compression
+    from utils.image_compression import CompressedImage
+    mock_compressed = CompressedImage(
+        inference_base64="inference-base64-data",
+        inference_media_type="image/jpeg",
+        storage_base64="storage-base64-data",
+        storage_media_type="image/webp"
+    )
+    mock_compress.return_value = mock_compressed
+
+    # Mock lock acquisition
+    mock_lock.acquire.return_value = True
+
+    # Mock continuum pool
+    mock_continuum = Mock()
+    mock_continuum.id = "continuum-123"
+    mock_pool_instance = Mock()
+    mock_pool_instance.get_or_create.return_value = mock_continuum
+    mock_pool_instance.repository.increment_segment_turn.return_value = 1
+
+    # Mock active segment
+    mock_sentinel = Mock()
+    mock_sentinel.metadata = {"segment_id": "segment-456"}
+    mock_pool_instance.repository.find_active_segment.return_value = mock_sentinel
+
+    # Mock unit of work
+    mock_uow = Mock()
+    mock_pool_instance.begin_work.return_value = mock_uow
+    mock_pool.return_value = mock_pool_instance
+
+    # Mock orchestrator
+    mock_orch_instance = Mock()
+    mock_orch_instance.process_message.return_value = (
+        mock_continuum,
+        "I can see a cat in this image.",
+        {"tools_used": [], "referenced_memories": [], "surfaced_memories": []}
+    )
+    mock_orchestrator.return_value = mock_orch_instance
+
+    # Create message with image attachment (legacy format)
+    image_event = {
+        "type": "MESSAGE",
+        "message": {
+            "text": "Can you analyze this image?",
+            "sender": {
+                "name": "users/123",
+                "displayName": "Taylor",
+                "email": "taylor@example.com"
+            },
+            "attachment": [
+                {
+                    "name": "photo.jpg",
+                    "contentType": "image/jpeg",
+                    "downloadUrl": "https://chat.googleapis.com/v1/media/fake-url"
+                }
+            ]
+        },
+        "user": {"name": "users/123", "displayName": "Taylor"},
+        "space": {"name": "spaces/ABC", "type": "DM"},
+        "token": "mock-bearer-token"
+    }
+
+    response = client.post(
+        "/v0/api/google-chat",
+        json=image_event
+    )
+
+    assert response.status_code == 200
+
+    # Verify image download was attempted
+    mock_requests_get.assert_called_once()
+    call_args = mock_requests_get.call_args
+    assert call_args[0][0] == "https://chat.googleapis.com/v1/media/fake-url"
+    assert call_args[1]["headers"]["Authorization"] == "Bearer mock-bearer-token"
+
+    # Verify image compression was called
+    mock_compress.assert_called_once_with(b"fake-image-bytes", "image/jpeg")
+
+    # Verify orchestrator received image content
+    mock_orch_instance.process_message.assert_called_once()
+    call_args = mock_orch_instance.process_message.call_args
+    inference_content = call_args[0][1]  # Second positional arg
+
+    # Should be a list with text and image blocks
+    assert isinstance(inference_content, list)
+    assert len(inference_content) == 2
+    assert inference_content[0]["type"] == "text"
+    assert inference_content[1]["type"] == "image"
+    assert inference_content[1]["source"]["type"] == "base64"
+    assert inference_content[1]["source"]["data"] == "inference-base64-data"
+
+
+@patch('cns.api.google_chat.get_orchestrator')
+@patch('cns.api.google_chat.get_continuum_pool')
+@patch('cns.api.google_chat._user_request_lock')
+@patch('cns.api.google_chat.requests.get')
+@patch('cns.api.google_chat.compress_image')
+def test_chat_app_format_with_image(mock_compress, mock_requests_get, mock_lock, mock_pool, mock_orchestrator, client):
+    """Test Chat App format with image attachment."""
+    # Mock image download
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.content = b"fake-image-bytes"
+    mock_requests_get.return_value = mock_response
+
+    # Mock image compression
+    from utils.image_compression import CompressedImage
+    mock_compressed = CompressedImage(
+        inference_base64="inference-base64-data",
+        inference_media_type="image/jpeg",
+        storage_base64="storage-base64-data",
+        storage_media_type="image/webp"
+    )
+    mock_compress.return_value = mock_compressed
+
+    # Mock lock acquisition
+    mock_lock.acquire.return_value = True
+
+    # Mock continuum pool
+    mock_continuum = Mock()
+    mock_continuum.id = "continuum-123"
+    mock_pool_instance = Mock()
+    mock_pool_instance.get_or_create.return_value = mock_continuum
+    mock_pool_instance.repository.increment_segment_turn.return_value = 1
+
+    # Mock active segment
+    mock_sentinel = Mock()
+    mock_sentinel.metadata = {"segment_id": "segment-456"}
+    mock_pool_instance.repository.find_active_segment.return_value = mock_sentinel
+
+    # Mock unit of work
+    mock_uow = Mock()
+    mock_pool_instance.begin_work.return_value = mock_uow
+    mock_pool.return_value = mock_pool_instance
+
+    # Mock orchestrator
+    mock_orch_instance = Mock()
+    mock_orch_instance.process_message.return_value = (
+        mock_continuum,
+        "I can see a dog in this image.",
+        {"tools_used": [], "referenced_memories": [], "surfaced_memories": []}
+    )
+    mock_orchestrator.return_value = mock_orch_instance
+
+    # Create Chat App format message with image
+    chat_app_event = {
+        "chat": {
+            "messagePayload": {
+                "message": {
+                    "text": "What's in this picture?",
+                    "attachment": [
+                        {
+                            "name": "image.png",
+                            "contentType": "image/png",
+                            "downloadUrl": "https://chat.googleapis.com/v1/media/chat-app-url"
+                        }
+                    ]
+                }
+            }
+        },
+        "token": "chat-app-bearer-token"
+    }
+
+    response = client.post(
+        "/v0/api/google-chat",
+        json=chat_app_event
+    )
+
+    assert response.status_code == 200
+
+    # Verify image download was attempted with correct auth
+    mock_requests_get.assert_called_once()
+    call_args = mock_requests_get.call_args
+    assert call_args[0][0] == "https://chat.googleapis.com/v1/media/chat-app-url"
+    assert call_args[1]["headers"]["Authorization"] == "Bearer chat-app-bearer-token"
+
+    # Verify image was compressed
+    mock_compress.assert_called_once_with(b"fake-image-bytes", "image/png")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
