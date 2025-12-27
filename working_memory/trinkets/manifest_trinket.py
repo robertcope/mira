@@ -16,12 +16,9 @@ class ManifestTrinket(EventAwareTrinket):
     Displays conversation manifest in working memory.
 
     This trinket formats the segment-based conversation manifest
-    into a structured XML section for the system prompt, showing recent
+    into a structured XML section for the notification center, showing recent
     conversation segments organized by time.
     """
-
-    # Manifest is cacheable (changes infrequently)
-    cache_policy = True
 
     def __init__(self, event_bus, working_memory):
         """Initialize manifest trinket with event bus and required service."""

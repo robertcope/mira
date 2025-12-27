@@ -6,30 +6,40 @@ sections from trinkets and assembling them in a defined order.
 """
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, NamedTuple
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Placement constants (match TrinketPlacement enum values)
+PLACEMENT_SYSTEM = "system"
+PLACEMENT_NOTIFICATION = "notification"
+
+
+class SectionData(NamedTuple):
+    """Data for a single section."""
+    content: str
+    cache_policy: bool
+    placement: str
 
 
 @dataclass
 class ComposerConfig:
     """Configuration for the system prompt composer."""
+    # Display order for all sections (placement determines which group they're in)
     section_order: List[str] = field(default_factory=lambda: [
-        'base_prompt',           # Cached (static system prompt)
-        'conversation_manifest', # Cached (segment summaries - changes infrequently)
-        'domaindoc',             # Cached (domain knowledge - changes infrequently)
-        # IMPORTANT: All cached trinkets (cache_policy=True) must be sequential above this line
-        # for Claude's prefix caching to work efficiently. Non-cached trinkets go below.
-        'datetime_section',
-        'active_reminders',
-        'punchclock_status',
+        # System prompt sections
+        'base_prompt',
+        'domaindoc',
         'tool_guidance',
         'tool_hints',
+        # Notification center sections
+        'datetime_section',
+        'conversation_manifest',
+        'active_reminders',
+        'context_search_results',
         'relevant_memories',
-        'workflow_guidance',
-        'temporal_context'
-    ]) # NOTE: These can't be autoconfigured bc we're explicitly setting composition order
+    ])
     section_separator: str = "\n\n---\n\n"
     strip_empty_sections: bool = True
 
@@ -50,8 +60,7 @@ class SystemPromptComposer:
             config: Composer configuration. If None, uses defaults.
         """
         self.config = config or ComposerConfig()
-        self._sections: Dict[str, str] = {}
-        self._cache_policies: Dict[str, bool] = {}  # Track cache policy per section
+        self._sections: Dict[str, SectionData] = {}
 
         logger.info(f"SystemPromptComposer initialized with {len(self.config.section_order)} ordered sections")
     
@@ -62,26 +71,39 @@ class SystemPromptComposer:
         Args:
             prompt: Base system prompt that always appears first
         """
-        self._sections['base_prompt'] = prompt
-        self._cache_policies['base_prompt'] = True  # Base prompt is always cached
-        logger.debug(f"Set base prompt ({len(prompt)} chars, cache=True)")
-    
-    def add_section(self, name: str, content: str, cache_policy: bool = False) -> None:
+        self._sections['base_prompt'] = SectionData(
+            content=prompt,
+            cache_policy=True,
+            placement=PLACEMENT_SYSTEM
+        )
+        logger.debug(f"Set base prompt ({len(prompt)} chars)")
+
+    def add_section(
+        self,
+        name: str,
+        content: str,
+        cache_policy: bool = False,
+        placement: str = PLACEMENT_SYSTEM
+    ) -> None:
         """
-        Add or update a section for the system prompt.
+        Add or update a section.
 
         Args:
             name: Section name (e.g., 'datetime_section', 'active_reminders')
             content: Section content (can include formatting)
             cache_policy: Whether this section should be cached (default False)
+            placement: Where content appears - PLACEMENT_SYSTEM or PLACEMENT_NOTIFICATION
         """
         if not content or not content.strip():
             logger.debug(f"Skipping empty section '{name}'")
             return
 
-        self._sections[name] = content
-        self._cache_policies[name] = cache_policy
-        logger.debug(f"Added section '{name}' ({len(content)} chars, cache={cache_policy})")
+        self._sections[name] = SectionData(
+            content=content,
+            cache_policy=cache_policy,
+            placement=placement
+        )
+        logger.debug(f"Added section '{name}' ({len(content)} chars, placement={placement})")
 
     def clear_sections(self, preserve_base: bool = True) -> None:
         """
@@ -90,69 +112,103 @@ class SystemPromptComposer:
         Args:
             preserve_base: If True, keeps the base_prompt section
         """
-        base_prompt = self._sections.get('base_prompt') if preserve_base else None
-        base_cache_policy = self._cache_policies.get('base_prompt') if preserve_base else None
+        base_data = self._sections.get('base_prompt') if preserve_base else None
         self._sections.clear()
-        self._cache_policies.clear()
-        if base_prompt:
-            self._sections['base_prompt'] = base_prompt
-            self._cache_policies['base_prompt'] = base_cache_policy
+        if base_data:
+            self._sections['base_prompt'] = base_data
         logger.debug(f"Cleared sections (preserved_base={preserve_base})")
     
     def compose(self) -> Dict[str, str]:
         """
-        Compose the system prompt into structured sections grouped by cache policy.
+        Compose system prompt and notification center content.
+
+        Sections are routed based on their placement attribute:
+        - PLACEMENT_SYSTEM: Goes in system prompt (cached/non-cached based on cache_policy)
+        - PLACEMENT_NOTIFICATION: Goes in notification center (slides forward each turn)
 
         Returns:
-            Dictionary with 'cached_content' and 'non_cached_content' keys
+            Dictionary with:
+            - 'cached_content': Static system prompt content (base_prompt)
+            - 'non_cached_content': Dynamic system prompt content (tool_guidance, tool_hints)
+            - 'notification_center': Sliding assistant message content (time, memories, etc.)
         """
         if not self._sections:
-            logger.warning("No sections to compose! (Something is amiss. This means no base prompt too.")
-            return {"cached_content": "", "non_cached_content": ""}
+            logger.warning("No sections to compose! This means no base prompt.")
+            return {"cached_content": "", "non_cached_content": "", "notification_center": ""}
 
-        # Separate sections by cache policy while maintaining order
+        # Route sections by placement, maintaining configured order
         cached_parts = []
         non_cached_parts = []
+        notification_parts = []
 
-        # Process sections in configured order
         for section_name in self.config.section_order:
-            if section_name in self._sections:
-                content = self._sections[section_name]
-                if self.config.strip_empty_sections and not content.strip():
-                    continue
+            if section_name not in self._sections:
+                continue
 
-                # Group by cache policy
-                cache_policy = self._cache_policies.get(section_name, False)
-                if cache_policy:
-                    cached_parts.append(content)
-                else:
-                    non_cached_parts.append(content)
+            section = self._sections[section_name]
+            if self.config.strip_empty_sections and not section.content.strip():
+                continue
 
-        # Add any sections not in the configured order
-        extra_sections = set(self._sections.keys()) - set(self.config.section_order)
-        if extra_sections:
-            logger.warning(f"Found sections not in configured order: {extra_sections}")
-            for section_name in sorted(extra_sections):
-                content = self._sections[section_name]
-                if self.config.strip_empty_sections and not content.strip():
-                    continue
+            if section.placement == PLACEMENT_NOTIFICATION:
+                notification_parts.append(section.content)
+            elif section.cache_policy:
+                cached_parts.append(section.content)
+            else:
+                non_cached_parts.append(section.content)
 
-                cache_policy = self._cache_policies.get(section_name, False)
-                if cache_policy:
-                    cached_parts.append(content)
-                else:
-                    non_cached_parts.append(content)
+        # Build notification center from collected parts
+        notification_center = self._build_notification_center(notification_parts)
 
-        # Join and clean each group
+        # Join and clean system prompt content
         cached_content = self._clean_content(self.config.section_separator.join(cached_parts))
         non_cached_content = self._clean_content(self.config.section_separator.join(non_cached_parts))
 
-        logger.info(f"Composed structured prompt: {len(cached_parts)} cached sections ({len(cached_content)} chars), {len(non_cached_parts)} non-cached sections ({len(non_cached_content)} chars)")
+        logger.info(
+            f"Composed: {len(cached_parts)} cached ({len(cached_content)} chars), "
+            f"{len(non_cached_parts)} non-cached ({len(non_cached_content)} chars), "
+            f"{len(notification_parts)} notification ({len(notification_center)} chars)"
+        )
 
         return {
             "cached_content": cached_content,
-            "non_cached_content": non_cached_content
+            "non_cached_content": non_cached_content,
+            "notification_center": notification_center
         }
+
+    def _build_notification_center(self, parts: List[str]) -> str:
+        """
+        Build notification center content from parts.
+
+        The notification center is an assistant message that slides forward
+        each turn, containing dynamic context like time, memories, and reminders.
+
+        Args:
+            parts: List of content strings to include
+
+        Returns:
+            Formatted notification center content or empty string if no content
+        """
+        if not parts:
+            return ""
+
+        # Build formatted notification center
+        # Opening delimiter is provided by the user message in orchestrator
+        # to make the role boundary invisible
+        lines = [
+            "NOTIFICATION CENTER",
+            "This section moves to the front of your context each turn",
+            "to keep important information front-of-mind.",
+            "═" * 60,
+            "",
+        ]
+
+        for content in parts:
+            lines.append(content)
+            lines.append("")
+
+        lines.append("═" * 60)
+
+        return "\n".join(lines)
 
     def _clean_content(self, content: str) -> str:
         """Clean up excessive whitespace in content."""

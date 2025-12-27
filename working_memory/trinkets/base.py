@@ -7,6 +7,7 @@ API access and monitoring.
 """
 import json
 import logging
+from enum import Enum
 from typing import Dict, Any, TYPE_CHECKING
 
 from clients.valkey_client import get_valkey_client
@@ -23,6 +24,22 @@ logger = logging.getLogger(__name__)
 TRINKET_KEY_PREFIX = "trinkets"
 
 
+class TrinketPlacement(Enum):
+    """Where trinket content appears in the context window."""
+    SYSTEM = "system"                    # Goes in system prompt (cached)
+    NOTIFICATION_CENTER = "notification" # Goes in notification center (slides forward)
+
+
+# Trinkets that go in the notification center (all others default to SYSTEM)
+_NOTIFICATION_CENTER_TRINKETS = frozenset({
+    'TimeManager',
+    'ManifestTrinket',
+    'ReminderManager',
+    'GetContextTrinket',
+    'ProactiveMemoryTrinket',
+})
+
+
 class EventAwareTrinket:
     """
     Base class for event-driven trinkets.
@@ -37,6 +54,13 @@ class EventAwareTrinket:
     # True = content should be cached (static content like tool guidance)
     # False = content changes frequently, don't cache (default)
     cache_policy: bool = False
+
+    @property
+    def placement(self) -> TrinketPlacement:
+        """Placement is determined by _NOTIFICATION_CENTER_TRINKETS registry."""
+        if self.__class__.__name__ in _NOTIFICATION_CENTER_TRINKETS:
+            return TrinketPlacement.NOTIFICATION_CENTER
+        return TrinketPlacement.SYSTEM
 
     def __init__(self, event_bus: 'EventBus', working_memory: 'WorkingMemory'):
         """
@@ -93,9 +117,10 @@ class EventAwareTrinket:
                 variable_name=self._variable_name,
                 content=content,
                 trinket_name=self.__class__.__name__,
-                cache_policy=self.cache_policy
+                cache_policy=self.cache_policy,
+                placement=self.placement.value
             ))
-            logger.debug(f"{self.__class__.__name__} published content ({len(content)} chars, cache={self.cache_policy})")
+            logger.debug(f"{self.__class__.__name__} published content ({len(content)} chars, placement={self.placement.value})")
 
     def _persist_to_valkey(self, content: str) -> None:
         """
