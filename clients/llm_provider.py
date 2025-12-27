@@ -1168,6 +1168,7 @@ class LLMProvider:
             # - When thinking disabled: strip all thinking blocks
             # - When thinking enabled: strip only generic provider thinking (signature=None)
             #   to prevent Anthropic rejecting blocks with invalid signatures
+            # Also strip reasoning_details field (OpenRouter/Gemini only, not Anthropic)
             def keep_block(block: dict) -> bool:
                 if block.get("type") != "thinking":
                     return True  # Keep non-thinking blocks
@@ -1177,9 +1178,11 @@ class LLMProvider:
                 return block.get("signature") is not None
 
             messages_to_send = [
-                {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
-                if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
-                else msg
+                {k: v for k, v in (
+                    {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
+                    else msg
+                ).items() if k != "reasoning_details"}
                 for msg in anthropic_messages
             ]
 
@@ -1365,6 +1368,7 @@ class LLMProvider:
             # - When thinking disabled: strip all thinking blocks
             # - When thinking enabled: strip only generic provider thinking (signature=None)
             #   to prevent Anthropic rejecting blocks with invalid signatures
+            # Also strip reasoning_details field (OpenRouter/Gemini only, not Anthropic)
             def keep_block(block: dict) -> bool:
                 if block.get("type") != "thinking":
                     return True  # Keep non-thinking blocks
@@ -1374,9 +1378,11 @@ class LLMProvider:
                 return block.get("signature") is not None
 
             messages_to_send = [
-                {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
-                if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
-                else msg
+                {k: v for k, v in (
+                    {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
+                    else msg
+                ).items() if k != "reasoning_details"}
                 for msg in anthropic_messages
             ]
 
