@@ -778,6 +778,7 @@ class ReminderTool(Tool):
             "updated_at": format_dt(reminder.get("updated_at")),
             "completed": bool(reminder.get("completed", 0)),
             "completed_at": format_dt(reminder.get("completed_at")),
+            "notified_at": format_dt(reminder.get("notified_at")),
             "encrypted__additional_notes": reminder.get("encrypted__additional_notes"),
             "category": reminder.get("category", "user")
         }

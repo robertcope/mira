@@ -130,14 +130,17 @@ class GoogleChatNotifier:
                 category="user"
             )
 
-            # Collect unnotified reminders
+            # Collect unnotified reminders that are actually due (not future)
             due_reminders = []
+            now = utc_now()
 
             for result in [overdue_result, today_result]:
                 for reminder in result.get('reminders', []):
-                    # Only notify if not already notified
+                    # Only notify if not already notified AND due time has passed
                     if not reminder.get('notified_at'):
-                        due_reminders.append(reminder)
+                        reminder_date = parse_utc_time_string(reminder['reminder_date'])
+                        if reminder_date <= now:
+                            due_reminders.append(reminder)
 
             if not due_reminders:
                 return
