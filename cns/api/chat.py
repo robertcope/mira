@@ -32,7 +32,7 @@ router = APIRouter()
 
 # Image validation constants (keep consistent with websocket implementation)
 SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_IMAGE_SIZE_MB = 5
+MAX_IMAGE_SIZE_MB = 20
 
 # Distributed per-user request lock (coordinates across workers)
 _user_request_lock = UserRequestLock(ttl=60)

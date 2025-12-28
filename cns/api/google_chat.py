@@ -40,8 +40,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Image validation constants
+# Pre-compression size limit - images are resized to 1200px for inference, so large
+# raw files will be significantly reduced. Set high to avoid rejecting images that
+# compress well. Anthropic's 5MB limit applies to base64-encoded compressed images.
 SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_IMAGE_SIZE_MB = 5
+MAX_IMAGE_SIZE_MB = 20
 
 # Distributed per-user request lock
 _user_request_lock = UserRequestLock(ttl=60)
@@ -161,31 +164,29 @@ class GoogleChatHandler(BaseHandler):
             # Process first attachment only (Google Chat typically sends one at a time)
             attachment = attachments[0]
             attachment_type = attachment.get("contentType", "")
-            download_url = attachment.get("downloadUrl")
 
-            if download_url:
-                # Download attachment from Google Chat
-                # Note: Requires bearer token from event's 'token' field for authentication
-                import requests
-                bearer_token = event_data.get("token")
-                if not bearer_token:
-                    logger.error("[Google Chat] No bearer token found in event_data for attachment download")
-                    raise ValidationError("Cannot download attachment: missing authentication token")
+            # Get resource name from attachmentDataRef for downloading actual content
+            attachment_data_ref = attachment.get("attachmentDataRef", {})
+            resource_name = attachment_data_ref.get("resourceName")
 
-                logger.info(f"[Google Chat] Downloading attachment from {download_url[:50]}...")
+            # Download using Google Chat API with service account credentials
+            if resource_name:
+                logger.info(f"[Google Chat] Downloading attachment via API using resourceName")
                 try:
-                    response = requests.get(
-                        download_url,
-                        headers={"Authorization": f"Bearer {bearer_token}"},
-                        timeout=30
+                    from utils.google_chat_client import get_google_chat_client
+
+                    # Get authenticated API client
+                    chat_client = get_google_chat_client()
+                    if not chat_client._service:
+                        raise RuntimeError("Google Chat API service not initialized")
+
+                    # Download attachment using Google Chat API
+                    # Use media().download() with alt=media to get raw bytes
+                    request = chat_client._service.media().download_media(
+                        resourceName=resource_name
                     )
-                    logger.info(f"[Google Chat] Attachment download response: status={response.status_code}")
+                    attachment_bytes = request.execute()
 
-                    if response.status_code != 200:
-                        logger.error(f"[Google Chat] Attachment download failed: {response.status_code} {response.text}")
-                        raise ValidationError(f"Failed to download attachment: HTTP {response.status_code}")
-
-                    attachment_bytes = response.content
                     logger.info(f"[Google Chat] Downloaded {len(attachment_bytes)} bytes, type={attachment_type}")
 
                     # Process as image or document
@@ -206,8 +207,8 @@ class GoogleChatHandler(BaseHandler):
                     else:
                         logger.warning(f"[Google Chat] Unsupported attachment type: {attachment_type}")
 
-                except requests.RequestException as e:
-                    logger.error(f"[Google Chat] Network error downloading attachment: {e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"[Google Chat] Error downloading attachment: {e}", exc_info=True)
                     raise ValidationError(f"Failed to download attachment: {e}")
 
         # Acquire user lock (one request at a time per user)
@@ -240,21 +241,26 @@ class GoogleChatHandler(BaseHandler):
             if attachments and not compressed_image:
                 attachment = attachments[0]
                 attachment_type = attachment.get("contentType", "")
-                download_url = attachment.get("downloadUrl")
+                attachment_data_ref = attachment.get("attachmentDataRef", {})
+                resource_name = attachment_data_ref.get("resourceName")
 
-                if download_url and attachment_type in SUPPORTED_DOCUMENT_FORMATS:
+                if resource_name and attachment_type in SUPPORTED_DOCUMENT_FORMATS:
                     files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
 
-                    # Download attachment
-                    import requests
-                    bearer_token = event_data.get("token")
-                    response = requests.get(
-                        download_url,
-                        headers={"Authorization": f"Bearer {bearer_token}"}
-                    )
-                    if response.status_code == 200:
-                        document_bytes = response.content
-                        filename = attachment.get("name", f"document.{attachment_type.split('/')[-1]}")
+                    # Download attachment using Google Chat API
+                    try:
+                        from utils.google_chat_client import get_google_chat_client
+
+                        chat_client = get_google_chat_client()
+                        if not chat_client._service:
+                            raise RuntimeError("Google Chat API service not initialized")
+
+                        request = chat_client._service.media().download_media(
+                            resourceName=resource_name
+                        )
+                        document_bytes = request.execute()
+
+                        filename = attachment.get("contentName", f"document.{attachment_type.split('/')[-1]}")
 
                         try:
                             processed_doc = process_document(
@@ -266,6 +272,10 @@ class GoogleChatHandler(BaseHandler):
                             )
                         except ValueError as e:
                             raise ValidationError(f"Document processing failed: {e}")
+
+                    except Exception as e:
+                        logger.error(f"[Google Chat] Error downloading document: {e}", exc_info=True)
+                        raise ValidationError(f"Failed to download document: {e}")
 
             # Build content arrays (same pattern as chat.py)
             inference_content: Union[str, List[Dict[str, Any]]]

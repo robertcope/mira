@@ -419,10 +419,37 @@ class GenericOpenAIClient:
                                 "content": result_content
                             })
                     else:
-                        # Extract text from content blocks
-                        text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-                        if text:
-                            openai_messages.append({"role": "user", "content": text})
+                        # Check if there are any image blocks
+                        has_images = any(b.get("type") == "image" for b in content)
+
+                        if has_images:
+                            # Build content array with text and image_url blocks
+                            content_parts = []
+                            for block in content:
+                                if block.get("type") == "text":
+                                    content_parts.append({
+                                        "type": "text",
+                                        "text": block.get("text", "")
+                                    })
+                                elif block.get("type") == "image":
+                                    # Convert Anthropic image format to OpenAI format
+                                    source = block.get("source", {})
+                                    if source.get("type") == "base64":
+                                        media_type = source.get("media_type", "image/jpeg")
+                                        base64_data = source.get("data", "")
+                                        content_parts.append({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:{media_type};base64,{base64_data}"
+                                            }
+                                        })
+                            if content_parts:
+                                openai_messages.append({"role": "user", "content": content_parts})
+                        else:
+                            # Extract text from content blocks (no images)
+                            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+                            if text:
+                                openai_messages.append({"role": "user", "content": text})
                 else:
                     # Simple string content
                     openai_messages.append({"role": "user", "content": content})
