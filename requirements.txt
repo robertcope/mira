@@ -45,6 +45,10 @@ httpx[http2]     # Modern HTTP client with HTTP/2 support - tools, LLM provider,
 aiohttp          # Async HTTP - kasa_tool.py for smart home control
 mcp              # Model Context Protocol SDK - mcp_client.py for MCP server connections
 
+# == GOOGLE CHAT API ==
+google-auth      # Google authentication library - google_chat_client.py for service account auth
+google-api-python-client  # Google API client - google_chat_client.py for sending proactive messages
+
 # == TOOL-SPECIFIC LIBRARIES ==
 googlemaps       # Google Maps API - maps_tool.py
 kasa             # TP-Link Kasa smart devices - kasa_tool.py

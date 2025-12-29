@@ -134,15 +134,23 @@ class ReminderTool(Tool):
             completed_at TEXT,
             contact_uuid TEXT,
             encrypted__additional_notes TEXT,
-            category TEXT DEFAULT 'user'
+            category TEXT DEFAULT 'user',
+            notified_at TEXT
         """
         self.db.create_table('reminders', schema)
-        
+
         # Create indexes for faster queries
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_date ON reminders(reminder_date)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_completed ON reminders(completed)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_contact ON reminders(contact_uuid)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_category ON reminders(category)")
+
+        # Add notified_at column to existing tables (safe migration)
+        try:
+            self.db.execute("ALTER TABLE reminders ADD COLUMN notified_at TEXT")
+        except Exception:
+            # Column already exists, which is fine
+            pass
 
     def _load_reminders(self, include_completed: bool = False) -> List[Dict[str, Any]]:
         """Load reminders from SQLite database."""
@@ -770,6 +778,7 @@ class ReminderTool(Tool):
             "updated_at": format_dt(reminder.get("updated_at")),
             "completed": bool(reminder.get("completed", 0)),
             "completed_at": format_dt(reminder.get("completed_at")),
+            "notified_at": format_dt(reminder.get("notified_at")),
             "encrypted__additional_notes": reminder.get("encrypted__additional_notes"),
             "category": reminder.get("category", "user")
         }
