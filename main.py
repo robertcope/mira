@@ -22,7 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from config.config_manager import config
-from cns.api import data, actions, health, tool_config, web_auth, google_chat
+from cns.api import data, actions, health, tool_config, web_auth, google_chat, oauth
 from cns.api import chat as chat_api
 from api import federation as federation_api
 from cns.api.base import APIError, create_error_response, generate_request_id
@@ -506,6 +506,7 @@ def create_app() -> FastAPI:
     app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
     app.include_router(web_auth.router, prefix="/v0/api", tags=["auth"])
     app.include_router(google_chat.router, prefix="/v0/api", tags=["google_chat"])
+    app.include_router(oauth.router, prefix="/v0/api", tags=["oauth"])
 
     # Serve static files for web interface
     app.mount("/static", StaticFiles(directory="static"), name="static")
