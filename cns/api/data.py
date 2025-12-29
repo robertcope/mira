@@ -210,10 +210,10 @@ class DataEndpoint(BaseHandler):
             name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
 
         # Calculate donation banner visibility (suppress for 21 days after donation)
-        show_donation_banner = True
-        if user.get('last_donated_at'):
-            days_since_donation = (utc_now() - user['last_donated_at']).days
-            show_donation_banner = days_since_donation > 21
+        show_donation_banner = False # RBC - It's my server!
+        # if user.get('last_donated_at'):
+        #     days_since_donation = (utc_now() - user['last_donated_at']).days
+        #     show_donation_banner = days_since_donation > 21
 
         return {
             "profile": {

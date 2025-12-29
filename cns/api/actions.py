@@ -34,6 +34,7 @@ class DomainType(str, Enum):
     CONTACTS = "contacts"
     DOMAIN_KNOWLEDGE = "domain_knowledge"
     CONTINUUM = "continuum"
+    UI_SESSION = "ui_session"
 
 
 class ActionRequest(BaseModel):
@@ -1507,6 +1508,100 @@ Example output: "Backyard garden management: current plantings with locations an
             return description
 
 
+class UISessionDomainHandler(BaseDomainHandler):
+    """Handler for UI session state (chat display messages)."""
+
+    ACTIONS = {
+        "save_display": {
+            "required": ["messages"],
+            "optional": [],
+            "types": {
+                "messages": list
+            }
+        },
+        "get_display": {
+            "required": [],
+            "optional": [],
+            "types": {}
+        },
+        "clear_display": {
+            "required": [],
+            "optional": [],
+            "types": {}
+        }
+    }
+
+    def execute_action(self, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute UI session actions using Valkey for ephemeral storage."""
+        from clients.valkey_client import get_valkey_client
+        import json
+
+        valkey = get_valkey_client()
+        session_key = f"ui_session:{self.user_id}:chat_display"
+
+        if action == "save_display":
+            messages = data["messages"]
+
+            # Validate message structure
+            if not isinstance(messages, list):
+                raise ValidationError("messages must be a list")
+
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    raise ValidationError("Each message must be a dictionary")
+                if "role" not in msg or "content" not in msg:
+                    raise ValidationError("Each message must have 'role' and 'content' fields")
+                if msg["role"] not in ["user", "assistant", "system"]:
+                    raise ValidationError(f"Invalid role: {msg['role']}")
+
+            # Store in Valkey with 7-day TTL
+            valkey.setex(
+                session_key,
+                604800,  # 7 days in seconds
+                json.dumps(messages)
+            )
+
+            return {
+                "saved": True,
+                "message_count": len(messages),
+                "message": "UI display state saved"
+            }
+
+        elif action == "get_display":
+            stored = valkey.get(session_key)
+
+            if stored is None:
+                return {
+                    "messages": [],
+                    "message": "No stored display state"
+                }
+
+            try:
+                messages = json.loads(stored)
+                return {
+                    "messages": messages,
+                    "message_count": len(messages),
+                    "message": "UI display state retrieved"
+                }
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode UI session data for user {self.user_id}")
+                return {
+                    "messages": [],
+                    "message": "Failed to decode stored state"
+                }
+
+        elif action == "clear_display":
+            deleted = valkey.delete(session_key)
+
+            return {
+                "cleared": deleted,
+                "message": "UI display state cleared" if deleted else "No display state to clear"
+            }
+
+        else:
+            raise ValidationError(f"Unknown action: {action}")
+
+
 class ContinuumDomainHandler(BaseDomainHandler):
     """Handler for continuum-level configuration actions (LLM tier, segment collapse)."""
 
@@ -1747,7 +1842,8 @@ class ActionsEndpoint(BaseHandler):
             DomainType.USER: UserDomainHandler,
             DomainType.CONTACTS: ContactsDomainHandler,
             DomainType.DOMAIN_KNOWLEDGE: DomainKnowledgeDomainHandler,
-            DomainType.CONTINUUM: ContinuumDomainHandler
+            DomainType.CONTINUUM: ContinuumDomainHandler,
+            DomainType.UI_SESSION: UISessionDomainHandler
         }
     
     def process_request(self, **params) -> Dict[str, Any]:

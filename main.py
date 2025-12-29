@@ -16,12 +16,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from config.config_manager import config
-from cns.api import data, actions, health, tool_config
+from cns.api import data, actions, health, tool_config, web_auth
 from cns.api import chat as chat_api
 from api import federation as federation_api
 from cns.api.base import APIError, create_error_response, generate_request_id
@@ -502,16 +503,17 @@ def create_app() -> FastAPI:
     app.include_router(data.router, prefix="/v0/api", tags=["data"])
     app.include_router(actions.router, prefix="/v0/api", tags=["actions"])
     app.include_router(tool_config.router, prefix="/v0/api", tags=["tool_config"])
+    app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
+    app.include_router(web_auth.router, prefix="/v0/api", tags=["auth"])
 
-    # Root endpoint - friendly message for self-hosters
+    # Serve static files for web interface
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+    # Root route serves web interface
     @app.get("/")
     async def root():
-        """Guide users to the correct endpoints."""
-        return {
-            "message": "MIRA is running! To interact with MIRA, use /v0/api/chat or the CLI tool. To check system health, query /v0/api/health"
-        }
-
-    app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
+        """Serve the web interface."""
+        return FileResponse("static/index.html")
 
     
     return app

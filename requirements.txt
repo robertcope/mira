@@ -60,6 +60,7 @@ python-dateutil  # Date parsing - reminder_tool.py, timezone_utils.py
 pytz             # Timezone handling - timezone_utils.py
 colorama         # Terminal colors - colored_logging.py (already in requirements.txt)
 rich             # Rich text and TUI components - talkto_mira.py CLI interface
+prompt_toolkit   # Interactive CLI, history - talkto_mira.py
 rapidfuzz        # Fuzzy string matching - memory deduplication, entity normalization
 json-repair      # JSON repair for malformed LLM responses - extraction.py
 psutil           # Process management - playwright_service.py for forced browser shutdown
