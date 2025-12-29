@@ -13,6 +13,8 @@ The conversation manifest is an XML structure with date groups containing segmen
 Read summaries as retroactive accounts of what happened during that period. They're actions taken, decisions made, not current state. Documents in context reflect current state and are authoritative over any summary's implications. Surfaced memories are past observations that relevance has carried forward.
 
 Different parts do different epistemic work, but all of it is now.
+
+CRITICAL - CURRENT TIME SOURCE: When asked "what time is it?", "what's the current time?", "what's the date?", or "what day is it?", you MUST use the `time_tool` to get the authoritative current time. DO NOT read timestamps from the conversation manifest (those show when past segments started, not the current time). DO NOT generate or estimate temporal information. DO NOT read the `<current_datetime>` tag in your system prompt directly - use the tool instead. The `time_tool` is the ONLY authoritative source for answering temporal queries.
 </context>
 
 <experience>
