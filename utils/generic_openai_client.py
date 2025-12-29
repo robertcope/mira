@@ -164,6 +164,10 @@ class GenericOpenAIClient:
 
         logger.info(f"GenericOpenAIClient initialized: {endpoint} / {model}")
 
+    def _is_groq_endpoint(self) -> bool:
+        """Check if this client is configured for a Groq endpoint."""
+        return "groq.com" in self.endpoint.lower()
+
     def _create_message(
         self,
         messages: List[Dict],
@@ -237,6 +241,7 @@ class GenericOpenAIClient:
         # Make HTTP request
         try:
             logger.debug(f"Generic OpenAI client request to {self.endpoint} with model {self.model}")
+
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
@@ -331,8 +336,6 @@ class GenericOpenAIClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        logger.debug(f"Starting streaming request to {self.endpoint}")
-
         with http_client.stream("POST", self.endpoint, json=payload, headers=headers, timeout=self.timeout) as response:
             if response.status_code >= 400:
                 error_text = response.read().decode('utf-8')
@@ -390,7 +393,6 @@ class GenericOpenAIClient:
             Messages in OpenAI format
         """
         openai_messages = []
-        logger.debug(f"Converting {len(anthropic_messages)} Anthropic messages")
 
         for msg in anthropic_messages:
             role = msg.get("role")
@@ -417,10 +419,37 @@ class GenericOpenAIClient:
                                 "content": result_content
                             })
                     else:
-                        # Extract text from content blocks
-                        text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-                        if text:
-                            openai_messages.append({"role": "user", "content": text})
+                        # Check if there are any image blocks
+                        has_images = any(b.get("type") == "image" for b in content)
+
+                        if has_images:
+                            # Build content array with text and image_url blocks
+                            content_parts = []
+                            for block in content:
+                                if block.get("type") == "text":
+                                    content_parts.append({
+                                        "type": "text",
+                                        "text": block.get("text", "")
+                                    })
+                                elif block.get("type") == "image":
+                                    # Convert Anthropic image format to OpenAI format
+                                    source = block.get("source", {})
+                                    if source.get("type") == "base64":
+                                        media_type = source.get("media_type", "image/jpeg")
+                                        base64_data = source.get("data", "")
+                                        content_parts.append({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:{media_type};base64,{base64_data}"
+                                            }
+                                        })
+                            if content_parts:
+                                openai_messages.append({"role": "user", "content": content_parts})
+                        else:
+                            # Extract text from content blocks (no images)
+                            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+                            if text:
+                                openai_messages.append({"role": "user", "content": text})
                 else:
                     # Simple string content
                     openai_messages.append({"role": "user", "content": content})
@@ -435,14 +464,22 @@ class GenericOpenAIClient:
                         if block.get("type") == "text":
                             text_parts.append(block["text"])
                         elif block.get("type") == "tool_use":
-                            tool_calls.append({
+                            tool_call = {
                                 "id": block["id"],
                                 "type": "function",
                                 "function": {
                                     "name": block["name"],
                                     "arguments": json.dumps(block["input"])
                                 }
-                            })
+                            }
+                            # Preserve thought_signature for Gemini models (required for multi-turn)
+                            # If missing (old messages before fix), use bypass signature
+                            signature = block.get("thought_signature")
+                            if not signature:
+                                signature = "skip_thought_signature_validator"
+                                logger.debug(f"Tool call {block['name']} missing thought_signature, using bypass")
+                            tool_call["function"]["thought_signature"] = signature
+                            tool_calls.append(tool_call)
                         elif block.get("type") == "thinking":
                             # Skip thinking blocks (not supported in generic providers)
                             logger.debug("Skipping thinking block in generic OpenAI client")
@@ -456,12 +493,13 @@ class GenericOpenAIClient:
                 if tool_calls:
                     msg_obj["tool_calls"] = tool_calls
                 # Preserve reasoning_details for round-trip (OpenRouter/Gemini requirement)
-                if msg.get("reasoning_details"):
+                # Groq explicitly rejects reasoning_details, so only include for compatible providers
+                # Check for key existence, not truthiness, since empty array [] is valid
+                if "reasoning_details" in msg and not self._is_groq_endpoint():
                     msg_obj["reasoning_details"] = msg["reasoning_details"]
 
                 openai_messages.append(msg_obj)
 
-        logger.debug(f"Converted to {len(openai_messages)} OpenAI messages")
         return openai_messages
 
     def _convert_tools(self, anthropic_tools: List[Dict]) -> List[Dict]:
@@ -550,7 +588,7 @@ class GenericOpenAIClient:
                 text=message["content"]
             ))
 
-        # Add tool calls (preserve IDs unchanged)
+        # Add tool calls (preserve IDs and thought_signature)
         if message.get("tool_calls"):
             for tc in message["tool_calls"]:
                 # OpenRouter omits 'arguments' entirely for no-parameter tools when proxying
@@ -561,12 +599,16 @@ class GenericOpenAIClient:
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse tool arguments: {arguments_str}")
                     arguments = {}
-                content_blocks.append(SimpleNamespace(
+                tool_block = SimpleNamespace(
                     type="tool_use",
                     id=tc["id"],
                     name=tc["function"]["name"],
                     input=arguments
-                ))
+                )
+                # Preserve thought_signature for Gemini models (required for multi-turn)
+                if tc["function"].get("thought_signature"):
+                    tool_block.thought_signature = tc["function"]["thought_signature"]
+                content_blocks.append(tool_block)
 
         # Map finish reason to Anthropic stop_reason
         stop_reason_map = {

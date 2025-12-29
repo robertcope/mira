@@ -534,6 +534,32 @@ class TestGenericOpenAIClientReasoningDetails:
         assert len(assistant_msgs) == 1
         assert "reasoning_details" not in assistant_msgs[0]
 
+    def test_convert_messages_strips_reasoning_details_for_groq(self):
+        """Verify _convert_messages() strips reasoning_details for Groq endpoints."""
+        client = GenericOpenAIClient(
+            endpoint="https://api.groq.com/openai/v1/chat/completions",
+            api_key="test",
+            model="llama-3.1-70b-versatile"
+        )
+
+        reasoning_details = [{"type": "reasoning.text", "text": "Thinking..."}]
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hi there!"}],
+                "reasoning_details": reasoning_details
+            }
+        ]
+
+        converted = client._convert_messages(messages)
+
+        # Groq doesn't support reasoning_details, so it should be stripped
+        assistant_msgs = [m for m in converted if m["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        assert "reasoning_details" not in assistant_msgs[0]
+        assert assistant_msgs[0]["content"] == "Hi there!"
+
 
 class TestGenericOpenAIClientSpecialCases:
     """Test special cases and edge conditions."""

@@ -779,6 +779,12 @@ class LLMProvider:
                         delta = choice.get("delta", {})
                         finish_reason = choice.get("finish_reason") or finish_reason
 
+                        # Accumulate reasoning_details if present (required by Gemini for round-trip)
+                        if chunk.get("reasoning_details"):
+                            accumulated_reasoning_details.extend(chunk["reasoning_details"])
+                        elif delta.get("reasoning_details"):
+                            accumulated_reasoning_details.extend(delta["reasoning_details"])
+
                         # Stream text content in real-time
                         if delta.get("content"):
                             yield TextEvent(content=delta["content"])
@@ -799,22 +805,31 @@ class LLMProvider:
                                 idx = tc["index"]
                                 if idx not in accumulated_tool_calls:
                                     # New tool call - initialize and emit ToolDetectedEvent
+                                    thought_sig = tc.get("function", {}).get("thought_signature")
                                     accumulated_tool_calls[idx] = {
                                         "id": tc.get("id", ""),
                                         "name": tc.get("function", {}).get("name", ""),
-                                        "arguments": ""
+                                        "arguments": "",
+                                        "thought_signature": thought_sig
                                     }
+                                    if thought_sig:
+                                        self.logger.debug(f"Captured thought_signature on tool call {idx}: {thought_sig[:30]}...")
+                                    else:
+                                        self.logger.debug(f"Tool call chunk {idx} missing thought_signature")
                                     if accumulated_tool_calls[idx]["name"]:
                                         yield ToolDetectedEvent(
                                             tool_name=accumulated_tool_calls[idx]["name"],
                                             tool_id=accumulated_tool_calls[idx]["id"]
                                         )
                                 else:
-                                    # Update existing tool call ID/name if provided
+                                    # Update existing tool call ID/name/thought_signature if provided
                                     if tc.get("id"):
                                         accumulated_tool_calls[idx]["id"] = tc["id"]
                                     if tc.get("function", {}).get("name"):
                                         accumulated_tool_calls[idx]["name"] = tc["function"]["name"]
+                                    if tc.get("function", {}).get("thought_signature"):
+                                        accumulated_tool_calls[idx]["thought_signature"] = tc["function"]["thought_signature"]
+                                        self.logger.debug(f"Updated thought_signature on tool call {idx}")
 
                                 # Accumulate arguments
                                 args_delta = tc.get("function", {}).get("arguments", "")
@@ -827,7 +842,7 @@ class LLMProvider:
                     if accumulated_text:
                         content_blocks.append(SimpleNamespace(type="text", text=accumulated_text))
 
-                    # Add tool_use blocks - parse accumulated JSON arguments
+                    # Add tool_use blocks - parse accumulated JSON arguments and preserve thought_signature
                     for idx in sorted(accumulated_tool_calls.keys()):
                         tc = accumulated_tool_calls[idx]
                         try:
@@ -835,12 +850,16 @@ class LLMProvider:
                         except json.JSONDecodeError:
                             self.logger.warning(f"Failed to parse tool arguments: {tc['arguments'][:100]}")
                             arguments = {}
-                        content_blocks.append(SimpleNamespace(
+                        tool_block = SimpleNamespace(
                             type="tool_use",
                             id=tc["id"],
                             name=tc["name"],
                             input=arguments
-                        ))
+                        )
+                        # Preserve thought_signature for Gemini models (required for multi-turn tool calling)
+                        if tc.get("thought_signature"):
+                            tool_block.thought_signature = tc["thought_signature"]
+                        content_blocks.append(tool_block)
 
                     # Map finish reason to Anthropic stop_reason
                     stop_reason_map = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
@@ -923,16 +942,21 @@ class LLMProvider:
                         if block.type == "text":
                             assistant_content.append({"type": "text", "text": block.text})
                         elif block.type == "tool_use":
-                            assistant_content.append({
+                            tool_use_block = {
                                 "type": "tool_use",
                                 "id": block.id,
                                 "name": block.name,
                                 "input": block.input
-                            })
+                            }
+                            # Preserve thought_signature for Gemini models (required for multi-turn)
+                            if hasattr(block, 'thought_signature') and block.thought_signature:
+                                tool_use_block["thought_signature"] = block.thought_signature
+                            assistant_content.append(tool_use_block)
 
                     assistant_msg = {"role": "assistant", "content": assistant_content}
                     # Preserve reasoning_details for round-trip (required by OpenRouter reasoning models)
-                    if hasattr(response, 'reasoning_details') and response.reasoning_details:
+                    # Gemini requires this field even if empty array - check attribute existence, not truthiness
+                    if hasattr(response, 'reasoning_details'):
                         assistant_msg["reasoning_details"] = response.reasoning_details
                     current_messages.append(assistant_msg)
                     current_messages.append({"role": "user", "content": tool_results})
@@ -1144,6 +1168,7 @@ class LLMProvider:
             # - When thinking disabled: strip all thinking blocks
             # - When thinking enabled: strip only generic provider thinking (signature=None)
             #   to prevent Anthropic rejecting blocks with invalid signatures
+            # Also strip reasoning_details field (OpenRouter/Gemini only, not Anthropic)
             def keep_block(block: dict) -> bool:
                 if block.get("type") != "thinking":
                     return True  # Keep non-thinking blocks
@@ -1153,9 +1178,11 @@ class LLMProvider:
                 return block.get("signature") is not None
 
             messages_to_send = [
-                {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
-                if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
-                else msg
+                {k: v for k, v in (
+                    {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
+                    else msg
+                ).items() if k != "reasoning_details"}
                 for msg in anthropic_messages
             ]
 
@@ -1341,6 +1368,7 @@ class LLMProvider:
             # - When thinking disabled: strip all thinking blocks
             # - When thinking enabled: strip only generic provider thinking (signature=None)
             #   to prevent Anthropic rejecting blocks with invalid signatures
+            # Also strip reasoning_details field (OpenRouter/Gemini only, not Anthropic)
             def keep_block(block: dict) -> bool:
                 if block.get("type") != "thinking":
                     return True  # Keep non-thinking blocks
@@ -1350,9 +1378,11 @@ class LLMProvider:
                 return block.get("signature") is not None
 
             messages_to_send = [
-                {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
-                if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
-                else msg
+                {k: v for k, v in (
+                    {**msg, "content": [b for b in msg["content"] if keep_block(b)]}
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
+                    else msg
+                ).items() if k != "reasoning_details"}
                 for msg in anthropic_messages
             ]
 
@@ -1664,6 +1694,7 @@ class LLMProvider:
 
         Converts Anthropic Message to message dict suitable for continuum history.
         Preserves thinking blocks when extended thinking is enabled.
+        Preserves reasoning_details and thought_signature for OpenRouter Gemini models (required for multi-turn).
 
         Args:
             message: Anthropic Message object
@@ -1686,17 +1717,28 @@ class LLMProvider:
                     "text": block.text
                 })
             elif block.type == "tool_use":
-                content_blocks.append({
+                tool_use_dict = {
                     "type": "tool_use",
                     "id": block.id,
                     "name": block.name,
                     "input": block.input
-                })
+                }
+                # Preserve thought_signature for Gemini models (required for multi-turn)
+                if hasattr(block, 'thought_signature') and block.thought_signature:
+                    tool_use_dict["thought_signature"] = block.thought_signature
+                content_blocks.append(tool_use_dict)
 
-        return {
+        assistant_msg = {
             "role": "assistant",
             "content": content_blocks
         }
+
+        # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+        # Gemini requires this field even if empty array - check attribute existence, not truthiness
+        if hasattr(message, 'reasoning_details'):
+            assistant_msg["reasoning_details"] = message.reasoning_details
+
+        return assistant_msg
 
     def _handle_anthropic_error(self, error: anthropic.APIStatusError) -> Generator[StreamEvent, None, None]:
         """Handle Anthropic SDK errors and yield appropriate events."""

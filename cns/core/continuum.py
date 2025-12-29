@@ -133,14 +133,65 @@ class Continuum:
                 message.metadata.get('status') == 'collapsed'):
                 content = format_segment_for_display(message)
 
-            if message.role == "assistant" and message.metadata.get("has_tool_calls", False):
-                # Assistant message with tool calls
+            # Check if message has tool calls - either via metadata flag or by inspecting content
+            has_tool_calls = message.metadata.get("has_tool_calls", False)
+            if not has_tool_calls and isinstance(content, list):
+                # Fallback: check if content already has tool_use blocks (old messages)
+                has_tool_calls = any(block.get("type") == "tool_use" for block in content if isinstance(block, dict))
+
+            if message.role == "assistant" and has_tool_calls:
+                # Assistant message with tool calls - convert to Anthropic format
+                content_blocks = []
+
+                # Handle content that's already in list format with tool_use blocks
+                if isinstance(content, list):
+                    # Content is already structured - preserve it
+                    content_blocks = content
+                elif content:
+                    # Content is a string - wrap it
+                    content_blocks.append({"type": "text", "text": content})
+
+                # Convert OpenAI-format tool_calls from metadata to Anthropic-format (if present)
+                if "tool_calls" in message.metadata:
+                    import copy
+                    import json
+                    tool_calls = copy.deepcopy(message.metadata["tool_calls"])
+                    for tc in tool_calls:
+                        # Convert from OpenAI format: {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+                        # to Anthropic format: {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+                        func = tc.get("function", {})
+                        arguments_str = func.get("arguments", "{}")
+                        try:
+                            arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                        tool_use_block = {
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": func["name"],
+                            "input": arguments
+                        }
+                        # Preserve thought_signature for Gemini (will be handled by generic_openai_client)
+                        if func.get("thought_signature"):
+                            tool_use_block["thought_signature"] = func["thought_signature"]
+                        content_blocks.append(tool_use_block)
+
                 msg_dict = {
                     "role": "assistant",
-                    "content": content
+                    "content": content_blocks
                 }
-                if "tool_calls" in message.metadata:
-                    msg_dict["tool_calls"] = message.metadata["tool_calls"]
+                # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+                # For messages without reasoning_details (old messages before this fix), add empty array
+                # to satisfy Gemini's requirement that reasoning details be preserved
+                if "reasoning_details" in message.metadata:
+                    msg_dict["reasoning_details"] = message.metadata["reasoning_details"]
+                    import logging
+                    logging.getLogger(__name__).debug(f"Tool call message has stored reasoning_details")
+                else:
+                    # Gemini requires reasoning_details on all assistant messages with tool calls
+                    # For old messages without it, provide empty array to satisfy the requirement
+                    msg_dict["reasoning_details"] = []
                 formatted_messages.append(msg_dict)
             elif message.role == "tool":
                 # Tool result message
@@ -157,10 +208,14 @@ class Continuum:
                 })
             else:
                 # Standard text message
-                formatted_messages.append({
+                msg_dict = {
                     "role": message.role,
                     "content": content
-                })
+                }
+                # Preserve reasoning_details for OpenRouter reasoning models (Gemini requirement)
+                if message.role == "assistant" and "reasoning_details" in message.metadata:
+                    msg_dict["reasoning_details"] = message.metadata["reasoning_details"]
+                formatted_messages.append(msg_dict)
 
         # Apply cache_control to last assistant message for conversation history caching
         # Anthropic ignores cache markers on content < 1024 tokens, so always mark
