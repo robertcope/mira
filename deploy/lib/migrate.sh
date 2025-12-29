@@ -1047,6 +1047,7 @@ migrate_check_no_active_sessions() {
 # Backup PostgreSQL user data tables
 backup_postgresql_data() {
     local backup_file="${BACKUP_DIR}/postgresql_backup.dump"
+    local error_file="${BACKUP_DIR}/pg_dump_errors.log"
 
     echo -ne "${DIM}${ARROW}${RESET} Backing up PostgreSQL data... "
 
@@ -1059,35 +1060,71 @@ backup_postgresql_data() {
         table_args="$table_args --table=$table"
     done
 
+    local pg_result=0
+
     if [ "$OS" = "linux" ]; then
-        if sudo -u postgres pg_dump -d mira_service \
-            --format=custom \
-            --no-owner \
-            --no-privileges \
-            --data-only \
-            $table_args \
-            --file="$backup_file" 2>/dev/null; then
-            echo -e "${CHECKMARK}"
+        if [ "$LOUD_MODE" = true ]; then
+            echo ""  # newline for verbose output
+            sudo -u postgres pg_dump -d mira_service \
+                --format=custom \
+                --no-owner \
+                --no-privileges \
+                --data-only \
+                $table_args \
+                --file="$backup_file" --verbose 2>&1
+            pg_result=$?
         else
-            echo -e "${ERROR}"
-            print_error "Failed to backup PostgreSQL data"
-            return 1
+            sudo -u postgres pg_dump -d mira_service \
+                --format=custom \
+                --no-owner \
+                --no-privileges \
+                --data-only \
+                $table_args \
+                --file="$backup_file" 2>"$error_file"
+            pg_result=$?
         fi
     else
-        # Use PGPASSWORD for authentication (password extracted in backup_vault_secrets)
-        if PGPASSWORD="$MIGRATE_DB_PASSWORD" pg_dump -U mira_admin -h localhost -d mira_service \
-            --format=custom \
-            --no-owner \
-            --no-privileges \
-            --data-only \
-            $table_args \
-            --file="$backup_file" 2>/dev/null; then
-            echo -e "${CHECKMARK}"
-        else
-            echo -e "${ERROR}"
-            print_error "Failed to backup PostgreSQL data"
-            return 1
+        # macOS: Use PGPASSWORD if set, otherwise rely on .pgpass/trust auth
+        local pg_env=""
+        if [ -n "$MIGRATE_DB_PASSWORD" ]; then
+            pg_env="PGPASSWORD=$MIGRATE_DB_PASSWORD"
         fi
+
+        if [ "$LOUD_MODE" = true ]; then
+            echo ""  # newline for verbose output
+            env $pg_env pg_dump -U mira_admin -h localhost -d mira_service \
+                --format=custom \
+                --no-owner \
+                --no-privileges \
+                --data-only \
+                $table_args \
+                --file="$backup_file" --verbose 2>&1
+            pg_result=$?
+        else
+            env $pg_env pg_dump -U mira_admin -h localhost -d mira_service \
+                --format=custom \
+                --no-owner \
+                --no-privileges \
+                --data-only \
+                $table_args \
+                --file="$backup_file" 2>"$error_file"
+            pg_result=$?
+        fi
+    fi
+
+    if [ $pg_result -eq 0 ]; then
+        [ "$LOUD_MODE" != true ] && echo -e "${CHECKMARK}"
+    else
+        [ "$LOUD_MODE" != true ] && echo -e "${ERROR}"
+        print_error "Failed to backup PostgreSQL data"
+        # Always show error details on failure, even in quiet mode
+        if [ -f "$error_file" ] && [ -s "$error_file" ]; then
+            print_info "Error details:"
+            cat "$error_file" | while read line; do
+                print_info "  $line"
+            done
+        fi
+        return 1
     fi
 
     # Record backup size
@@ -1307,6 +1344,7 @@ restore_vault_secrets() {
 # Restore PostgreSQL data from backup
 restore_postgresql_data() {
     local backup_file="${BACKUP_DIR}/postgresql_backup.dump"
+    local error_file="${BACKUP_DIR}/pg_restore_errors.log"
 
     echo -ne "${DIM}${ARROW}${RESET} Restoring PostgreSQL data... "
 
@@ -1316,46 +1354,78 @@ restore_postgresql_data() {
         return 1
     fi
 
+    local pg_result=0
+
     # Disable triggers during restore for FK constraint handling
     if [ "$OS" = "linux" ]; then
-        # Restore with triggers disabled
-        if sudo -u postgres pg_restore -d mira_service \
-            --data-only \
-            --disable-triggers \
-            --single-transaction \
-            "$backup_file" 2>/dev/null; then
-            echo -e "${CHECKMARK}"
+        if [ "$LOUD_MODE" = true ]; then
+            echo ""  # newline for verbose output
+            sudo -u postgres pg_restore -d mira_service \
+                --data-only \
+                --disable-triggers \
+                --single-transaction \
+                --verbose \
+                "$backup_file" 2>&1
+            pg_result=$?
         else
-            # pg_restore may return non-zero even on partial success
-            # Check if data was actually restored
-            local user_count
-            user_count=$(sudo -u postgres psql -d mira_service -tAc "SELECT COUNT(*) FROM users" 2>/dev/null || echo "0")
-            if [ "$user_count" -gt 0 ]; then
-                echo -e "${CHECKMARK} ${DIM}(with warnings)${RESET}"
-            else
-                echo -e "${ERROR}"
-                print_error "Failed to restore PostgreSQL data"
-                return 1
-            fi
+            sudo -u postgres pg_restore -d mira_service \
+                --data-only \
+                --disable-triggers \
+                --single-transaction \
+                "$backup_file" 2>"$error_file"
+            pg_result=$?
         fi
     else
-        # Use PGPASSWORD for authentication (password extracted in backup_vault_secrets)
-        if PGPASSWORD="$MIGRATE_DB_PASSWORD" pg_restore -U mira_admin -h localhost -d mira_service \
-            --data-only \
-            --disable-triggers \
-            --single-transaction \
-            "$backup_file" 2>/dev/null; then
-            echo -e "${CHECKMARK}"
+        # macOS: Use PGPASSWORD if set, otherwise rely on .pgpass/trust auth
+        local pg_env=""
+        if [ -n "$MIGRATE_DB_PASSWORD" ]; then
+            pg_env="PGPASSWORD=$MIGRATE_DB_PASSWORD"
+        fi
+
+        if [ "$LOUD_MODE" = true ]; then
+            echo ""  # newline for verbose output
+            env $pg_env pg_restore -U mira_admin -h localhost -d mira_service \
+                --data-only \
+                --disable-triggers \
+                --single-transaction \
+                --verbose \
+                "$backup_file" 2>&1
+            pg_result=$?
         else
-            local user_count
+            env $pg_env pg_restore -U mira_admin -h localhost -d mira_service \
+                --data-only \
+                --disable-triggers \
+                --single-transaction \
+                "$backup_file" 2>"$error_file"
+            pg_result=$?
+        fi
+    fi
+
+    if [ $pg_result -eq 0 ]; then
+        [ "$LOUD_MODE" != true ] && echo -e "${CHECKMARK}"
+    else
+        # pg_restore may return non-zero even on partial success
+        # Check if data was actually restored
+        local user_count
+        if [ "$OS" = "linux" ]; then
+            user_count=$(sudo -u postgres psql -d mira_service -tAc "SELECT COUNT(*) FROM users" 2>/dev/null || echo "0")
+        else
             user_count=$(PGPASSWORD="$MIGRATE_DB_PASSWORD" psql -U mira_admin -h localhost -d mira_service -tAc "SELECT COUNT(*) FROM users" 2>/dev/null || echo "0")
-            if [ "$user_count" -gt 0 ]; then
-                echo -e "${CHECKMARK} ${DIM}(with warnings)${RESET}"
-            else
-                echo -e "${ERROR}"
-                print_error "Failed to restore PostgreSQL data"
-                return 1
+        fi
+
+        if [ "$user_count" -gt 0 ]; then
+            [ "$LOUD_MODE" != true ] && echo -e "${CHECKMARK} ${DIM}(with warnings)${RESET}"
+        else
+            [ "$LOUD_MODE" != true ] && echo -e "${ERROR}"
+            print_error "Failed to restore PostgreSQL data"
+            # Always show error details on failure
+            if [ -f "$error_file" ] && [ -s "$error_file" ]; then
+                print_info "Error details:"
+                cat "$error_file" | while read line; do
+                    print_info "  $line"
+                done
             fi
+            return 1
         fi
     fi
 
