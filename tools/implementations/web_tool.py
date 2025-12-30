@@ -16,7 +16,18 @@ from pydantic import BaseModel, Field, field_validator
 from tools.repo import Tool
 from tools.registry import registry
 from utils import http_client
-from kagiapi import KagiClient
+
+try:
+    from kagiapi import KagiClient
+    KAGI_AVAILABLE = True
+except ImportError:
+    KAGI_AVAILABLE = False
+
+try:
+    from ddgs import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
 
 try:
     from bs4 import BeautifulSoup, Comment
@@ -174,26 +185,56 @@ class WebTool(Tool):
     # --- Search Operation ---
 
     def _search(self, input: SearchInput) -> Dict[str, Any]:
-        """Execute Kagi web search."""
-        if not self._kagi:
+        """Execute web search with Kagi primary, DuckDuckGo fallback."""
+        # Try Kagi first if available
+        if self._kagi:
+            try:
+                response = self._kagi.search(input.query, limit=input.max_results)
+                results = []
+                for item in response.get("data", []):
+                    url = item.get("url", "")
+                    if self._should_include_url(url, input.allowed_domains, input.blocked_domains):
+                        results.append({
+                            "title": item.get("title", ""),
+                            "url": url,
+                            "snippet": item.get("snippet", "")
+                        })
+                return {"success": True, "results": results, "provider": "kagi"}
+            except Exception as e:
+                self.logger.warning(f"Kagi search failed: {e}, falling back to DuckDuckGo")
+
+        # Fall back to DuckDuckGo
+        if not DDGS_AVAILABLE:
             raise ValueError(
-                "Web search requires a Kagi API key. "
-                "Add 'kagi_api_key' to vault via: https://kagi.com/settings?p=api"
+                "Web search requires either Kagi API key or DuckDuckGo. "
+                "Install ddgs: pip install ddgs"
             )
 
-        response = self._kagi.search(input.query, limit=input.max_results)
+        try:
+            ddgs = DDGS()
+            raw_results = ddgs.text(
+                input.query,
+                max_results=input.max_results,
+                backend="auto"
+            )
 
-        results = []
-        for item in response.get("data", []):
-            url = item.get("url", "")
-            if self._should_include_url(url, input.allowed_domains, input.blocked_domains):
-                results.append({
-                    "title": item.get("title", ""),
-                    "url": url,
-                    "snippet": item.get("snippet", "")
-                })
+            if not raw_results:
+                self.logger.warning(f"DuckDuckGo returned no results for query: {input.query}")
 
-        return {"success": True, "results": results}
+            results = []
+            for item in raw_results:
+                url = item.get("href", "")
+                if self._should_include_url(url, input.allowed_domains, input.blocked_domains):
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "snippet": item.get("body", "")
+                    })
+
+            return {"success": True, "results": results, "provider": "duckduckgo"}
+        except Exception as e:
+            self.logger.error(f"DuckDuckGo search error: {e}")
+            raise ValueError(f"DuckDuckGo search failed: {e}")
 
     # --- Fetch Operation ---
 
@@ -406,14 +447,20 @@ SOURCE: {url}"""
 
     def _init_kagi(self) -> None:
         """Initialize Kagi client from vault."""
+        if not KAGI_AVAILABLE:
+            self.logger.info("Kagi library not available, will use DuckDuckGo for search")
+            return
+
         try:
             from clients.vault_client import get_api_key
             api_key = get_api_key("kagi_api_key")
             if api_key:
                 self._kagi = KagiClient(api_key)
                 self.logger.info("Kagi client initialized")
+            else:
+                self.logger.info("Kagi API key not found, will use DuckDuckGo for search")
         except Exception as e:
-            self.logger.warning(f"Failed to initialize Kagi: {e}")
+            self.logger.warning(f"Failed to initialize Kagi: {e}, will use DuckDuckGo for search")
 
     def _get_timeout(self, timeout: Optional[int]) -> int:
         """Get validated timeout value."""
