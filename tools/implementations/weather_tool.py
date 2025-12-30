@@ -472,30 +472,31 @@ class WeatherTool(Tool):
 
     anthropic_schema = {
         "name": "weather_tool",
-        "description": "Retrieves weather forecast data and calculates heat stress indices for specified locations. Use this tool to get weather forecasts, heat stress information, and related data for planning field work activities based on expected weather conditions.",
+        "description": "Retrieves weather forecast data and calculates heat stress indices. Provide EITHER a location name (like 'Houston, TX') OR coordinates (latitude+longitude), never both. Operations: 'get_forecast' for weather data, 'get_heat_stress' for WBGT calculations.",
         "input_schema": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
                         "enum": ["get_forecast", "get_heat_stress"],
-                        "description": "The operation to perform"
+                        "default": "get_forecast",
+                        "description": "Use 'get_forecast' for weather forecasts (temperature, precipitation, wind, etc.) or 'get_heat_stress' for heat stress/WBGT calculations. Defaults to 'get_forecast'."
                     },
                     "latitude": {
                         "type": "number",
-                        "description": "Latitude of the location (-90 to 90)",
+                        "description": "Latitude of the location (-90 to 90). Use EITHER latitude+longitude OR location, never both.",
                         "minimum": -90,
                         "maximum": 90
                     },
                     "longitude": {
                         "type": "number",
-                        "description": "Longitude of the location (-180 to 180)",
+                        "description": "Longitude of the location (-180 to 180). Use EITHER latitude+longitude OR location, never both.",
                         "minimum": -180,
                         "maximum": 180
                     },
                     "location": {
                         "type": "string",
-                        "description": "City name or location (e.g., 'New York', 'Paris, France'). Alternative to latitude/longitude."
+                        "description": "City name or location (e.g., 'Houston, TX', 'Paris, France'). Use EITHER this OR latitude+longitude, never both. Prefer this when user provides a place name."
                     },
                     "forecast_type": {
                         "type": "string",
@@ -518,7 +519,7 @@ class WeatherTool(Tool):
                         "description": "Comma-separated list of specific parameters to retrieve. If not provided, returns all available parameters."
                     }
                 },
-                "required": ["operation"]
+                "required": []
             }
         }
 
@@ -698,7 +699,7 @@ class WeatherTool(Tool):
     
     def run(
         self,
-        operation: str,
+        operation: str = "get_forecast",
         latitude: Optional[Union[float, str]] = None,
         longitude: Optional[Union[float, str]] = None,
         location: Optional[str] = None,
