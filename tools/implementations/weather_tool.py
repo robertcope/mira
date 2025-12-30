@@ -514,9 +514,9 @@ class WeatherTool(Tool):
                         "type": "string",
                         "description": "Specific date for forecast in ISO format (YYYY-MM-DD). If not provided, returns forecast from current date."
                     },
-                    "parameters": {
+                    "weather_parameters": {
                         "type": "string",
-                        "description": "Comma-separated list of specific parameters to retrieve. If not provided, returns all available parameters."
+                        "description": "Comma-separated list of specific weather parameters to retrieve (e.g., 'temperature_2m,precipitation'). If not provided, returns common default parameters."
                     }
                 },
                 "required": []
@@ -706,11 +706,11 @@ class WeatherTool(Tool):
         forecast_type: Optional[str] = None,
         forecast_days: Optional[Union[int, str]] = None,
         date: Optional[str] = None,
-        parameters: Optional[Union[str, List[str]]] = None
+        weather_parameters: Optional[Union[str, List[str]]] = None
     ) -> Dict[str, Any]:
         """
         Execute the weather tool with the specified operation.
-        
+
         Args:
             operation: The operation to perform (get_forecast, get_heat_stress)
             latitude: Latitude of the location (-90 to 90). Required if location not provided.
@@ -719,11 +719,11 @@ class WeatherTool(Tool):
             forecast_type: Type of forecast to retrieve (hourly, daily)
             forecast_days: Number of days to include in the forecast (1-16)
             date: Specific date for forecast in ISO format (YYYY-MM-DD)
-            parameters: Specific parameters to retrieve (comma-separated or list)
-            
+            weather_parameters: Specific weather parameters to retrieve (comma-separated or list)
+
         Returns:
             Dictionary containing the operation results
-            
+
         Raises:
             ValueError: If parameters are invalid or the operation fails
         """
@@ -738,7 +738,7 @@ class WeatherTool(Tool):
             forecast_type = ValidationUtils.validate_forecast_type(forecast_type)
             validated_forecast_days = ValidationUtils.validate_forecast_days(forecast_days)
             validated_date = ValidationUtils.validate_date(date)
-            validated_params = ValidationUtils.validate_parameters(parameters)
+            validated_params = ValidationUtils.validate_parameters(weather_parameters)
             
             # Execute appropriate operation
             if operation == "get_forecast":

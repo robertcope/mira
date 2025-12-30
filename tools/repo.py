@@ -429,6 +429,13 @@ class ToolRepository:
             raise TypeError(f"Parameters for tool '{name}' must be a mapping or JSON string")
 
         tool = self.get_tool(name)  # This creates a fresh instance with current user context
+
+        # Handle case where LLM wraps all parameters in a "params" key
+        # This can happen due to schema confusion or LLM behavior
+        if "params" in params and len(params) == 1 and isinstance(params["params"], dict):
+            self.logger.warning(f"Tool '{name}' received parameters wrapped in 'params' key, unwrapping")
+            params = params["params"]
+
         self.logger.debug(f"Invoking tool: {name} with params: {params}")
 
         try:
