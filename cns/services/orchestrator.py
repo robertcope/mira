@@ -330,11 +330,14 @@ class ContinuumOrchestrator:
 
         # Apply tier-based model and thinking configuration
         from utils.user_context import get_user_preferences, resolve_tier, LLMProvider
+        from utils.thread_tier import get_thread_tier
         from clients.vault_client import get_api_key
 
         llm_kwargs = {}
         prefs = get_user_preferences()
-        tier_config = resolve_tier(prefs.llm_tier)
+        # Use thread-scoped tier (per Google Chat thread) instead of global user preference
+        tier_name = get_thread_tier(continuum.user_id)
+        tier_config = resolve_tier(tier_name)
 
         llm_kwargs['model_preference'] = tier_config.model
         if tier_config.thinking_budget == 0:

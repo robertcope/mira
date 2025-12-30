@@ -136,6 +136,15 @@ class GoogleChatHandler(BaseHandler):
         # Set user context for RLS
         set_current_user_id(user_id)
 
+        # Extract and store thread_key for per-thread tier resolution
+        message_info = event_data.get("message", {})
+        thread_info = message_info.get("thread", {})
+        thread_key = thread_info.get("name")
+        if thread_key:
+            from utils.user_context import update_current_user
+            update_current_user({'google_chat_thread_key': thread_key})
+            logger.info(f"Set google_chat_thread_key: {thread_key}")
+
         # Store Google Chat space for push notifications
         self._store_chat_space(event_data, user_id)
 

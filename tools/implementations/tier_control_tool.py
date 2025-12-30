@@ -132,11 +132,15 @@ class TierControlTool(Tool):
             Dictionary with current tier and available options
         """
         from utils.user_context import get_user_preferences, get_account_tiers, get_accessible_tiers
+        from utils.thread_tier import get_thread_tier
 
         prefs = get_user_preferences()
         all_tiers = get_account_tiers()
         accessible = get_accessible_tiers(prefs.max_tier)
         accessible_names = {t.name for t in accessible}
+
+        # Get current tier from thread-scoped storage
+        current_tier = get_thread_tier(self.user_id)
 
         # Build tier list with access information
         tier_list = []
@@ -152,23 +156,23 @@ class TierControlTool(Tool):
                 })
 
         # Create user-friendly response
-        current_tier_info = all_tiers.get(prefs.llm_tier)
-        current_tier_desc = current_tier_info.description if current_tier_info else prefs.llm_tier
+        current_tier_info = all_tiers.get(current_tier)
+        current_tier_desc = current_tier_info.description if current_tier_info else current_tier
 
-        response_parts = [f"Current tier: {prefs.llm_tier} ({current_tier_desc})"]
+        response_parts = [f"Current tier: {current_tier} ({current_tier_desc})"]
 
         if len([t for t in tier_list if t["accessible"]]) > 1:
             response_parts.append("\nAvailable tiers:")
             for tier in tier_list:
                 if tier["accessible"]:
-                    marker = "→" if tier["name"] == prefs.llm_tier else " "
+                    marker = "→" if tier["name"] == current_tier else " "
                     response_parts.append(f"{marker} {tier['name']}: {tier['description']}")
 
-        logger.info(f"Retrieved tier info: current={prefs.llm_tier}, max={prefs.max_tier}")
+        logger.info(f"Retrieved tier info: current={current_tier}, max={prefs.max_tier}")
 
         return {
             "success": True,
-            "current_tier": prefs.llm_tier,
+            "current_tier": current_tier,
             "max_tier": prefs.max_tier,
             "available_tiers": tier_list,
             "response": "\n".join(response_parts)
@@ -176,7 +180,7 @@ class TierControlTool(Tool):
 
     def _set_tier(self, tier: str) -> Dict[str, Any]:
         """
-        Change the LLM tier preference.
+        Change the LLM tier preference for the current thread.
 
         Args:
             tier: Tier name to switch to
@@ -185,11 +189,11 @@ class TierControlTool(Tool):
             Dictionary with operation result
         """
         from utils.user_context import (
-            update_user_preference,
             get_account_tiers,
             can_access_tier,
             get_user_preferences
         )
+        from utils.thread_tier import get_thread_tier, set_thread_tier
 
         # Validate tier exists
         tiers = get_account_tiers()
@@ -211,17 +215,25 @@ class TierControlTool(Tool):
                 "requires_upgrade": True
             }
 
-        # Update preference
-        update_user_preference('llm_tier', tier)
+        # Get current tier before update
+        previous_tier = get_thread_tier(self.user_id)
+
+        # Update tier in thread-scoped storage
+        success = set_thread_tier(self.user_id, tier)
+        if not success:
+            return {
+                "success": False,
+                "error": "Unable to set tier: no thread context available"
+            }
 
         tier_info = tiers[tier]
-        response = f"Switched to {tier} tier ({tier_info.description}). This change applies to subsequent messages."
+        response = f"Switched to {tier} tier ({tier_info.description}). This change applies to subsequent messages in this thread."
 
-        logger.info(f"Changed tier from {prefs.llm_tier} to {tier}")
+        logger.info(f"Changed tier from {previous_tier} to {tier}")
 
         return {
             "success": True,
-            "previous_tier": prefs.llm_tier,
+            "previous_tier": previous_tier,
             "new_tier": tier,
             "response": response
         }
