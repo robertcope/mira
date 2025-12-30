@@ -822,27 +822,39 @@ class WeatherTool(Tool):
         # Determine parameters to request
         hourly_params = []
         daily_params = []
-        
+
+        # Default parameters - request only commonly used ones to avoid API limits
+        default_hourly_params = [
+            "temperature_2m", "relative_humidity_2m", "apparent_temperature",
+            "precipitation_probability", "precipitation", "weather_code",
+            "cloud_cover", "wind_speed_10m", "wind_direction_10m"
+        ]
+        default_daily_params = [
+            "weather_code", "temperature_2m_max", "temperature_2m_min",
+            "precipitation_sum", "precipitation_probability_max",
+            "wind_speed_10m_max", "wind_gusts_10m_max"
+        ]
+
         if parameters is None:
-            # Default parameters if none specified
+            # Use sensible defaults instead of all available parameters
             if forecast_type == "hourly":
-                hourly_params = self._available_hourly_params
+                hourly_params = default_hourly_params
             else:  # daily
-                daily_params = self._available_daily_params
+                daily_params = default_daily_params
         else:
             # Requested parameters
             if forecast_type == "hourly":
                 hourly_params = [p for p in parameters if p in self._available_hourly_params]
             else:  # daily
                 daily_params = [p for p in parameters if p in self._available_daily_params]
-        
+
         # Ensure we have parameters to request
         if forecast_type == "hourly" and not hourly_params:
             self.logger.warning("No valid hourly parameters specified, using defaults")
-            hourly_params = ["temperature_2m", "precipitation_probability", "wind_speed_10m"]
+            hourly_params = default_hourly_params
         elif forecast_type == "daily" and not daily_params:
             self.logger.warning("No valid daily parameters specified, using defaults")
-            daily_params = ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]
+            daily_params = default_daily_params
         
         # Build API request URL
         url = config.weather_tool.api_endpoint
