@@ -8,9 +8,10 @@ Configuration:
 - Set up Google Chat App in Google Cloud Console
 - Configure webhook URL: https://your-domain.com/v0/api/google-chat
 - Enable Chat API scope
-- For signature verification: store bearer token in Vault under google_chat/webhook_token
+- Store JWT audience in Vault at 'mira/google_chat_config' with 'audience' field
+  (either your endpoint URL or Google Cloud project number)
 
-Reference: https://developers.google.com/chat/how-tos/webhooks
+Reference: https://developers.google.com/workspace/chat/verify-requests-from-chat
 """
 import base64
 import logging
@@ -21,6 +22,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from auth.api import get_current_user
+from utils.google_chat_jwt_verifier import (
+    verify_google_chat_jwt,
+    GoogleChatJWTVerificationError,
+)
 from clients.files_manager import FilesManager
 from utils.distributed_lock import UserRequestLock
 from utils.document_processing import process_document, ProcessedDocument, SUPPORTED_DOCUMENT_FORMATS
@@ -387,8 +392,21 @@ async def google_chat_webhook(request: Request):
     - MESSAGE: User sent a message
     - ADDED_TO_SPACE: Bot added to space (respond with greeting)
     - REMOVED_FROM_SPACE: Bot removed (no response needed)
+
+    Authentication:
+    - Validates JWT bearer token from Google Chat
+    - Returns 401 if token is missing or invalid
     """
     request_start = utc_now()
+
+    # Verify JWT from Google Chat
+    try:
+        authorization_header = request.headers.get("Authorization")
+        verify_google_chat_jwt(authorization_header)
+    except GoogleChatJWTVerificationError as e:
+        logger.warning(f"Google Chat JWT verification failed: {e}")
+        raise HTTPException(status_code=401, detail=str(e))
+
     try:
         event_data = await request.json()
 
