@@ -35,7 +35,8 @@ SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE_MB = 20
 
 # Distributed per-user request lock (coordinates across workers)
-_user_request_lock = UserRequestLock(ttl=60)
+# TTL set to 180s to accommodate long-running operations (web searches, complex tool usage)
+_user_request_lock = UserRequestLock(ttl=180)
 
 
 class ChatRequest(BaseModel):
@@ -119,8 +120,16 @@ class ChatEndpoint(BaseHandler):
 
         # Concurrency control: one active request per user
         if not _user_request_lock.acquire(user_id):
-            # Use a validation error to preserve consistent error envelope
-            raise ValidationError("Another chat request is already in progress for this user")
+            # Get TTL of existing lock to show how long user should wait
+            ttl = _user_request_lock.lock.get_ttl(user_id)
+            if ttl > 0:
+                elapsed = 180 - ttl  # Calculate how long the lock has been held
+                raise ValidationError(
+                    f"Another request is already in progress (started {elapsed}s ago, may take up to {ttl}s more)"
+                )
+            else:
+                # Lock expired or doesn't exist (race condition)
+                raise ValidationError("Another chat request is already in progress for this user")
 
         files_manager: Optional[FilesManager] = None
         try:
@@ -247,6 +256,13 @@ class ChatEndpoint(BaseHandler):
 
             processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
+            # Log processing time for monitoring long-running requests
+            tools_used = metadata.get("tools_used", [])
+            logger.info(
+                f"[Chat API] Request completed in {processing_time_ms}ms "
+                f"(user={user_id[:8]}..., tools={len(tools_used)})"
+            )
+
             # Build response
             data: Dict[str, Any] = {
                 "continuum_id": str(continuum.id),
@@ -269,6 +285,7 @@ class ChatEndpoint(BaseHandler):
         finally:
             # Note: File cleanup happens on segment collapse, not per-request
             _user_request_lock.release(user_id)
+            logger.debug(f"[Chat API] Released lock for user {user_id[:8]}...")
 
 
 @router.post("/chat")

@@ -52,7 +52,8 @@ SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE_MB = 20
 
 # Distributed per-user request lock
-_user_request_lock = UserRequestLock(ttl=60)
+# TTL set to 180s to accommodate long-running operations (web searches, complex tool usage)
+_user_request_lock = UserRequestLock(ttl=180)
 
 
 class GoogleChatEvent(BaseModel):
@@ -227,7 +228,16 @@ class GoogleChatHandler(BaseHandler):
 
         # Acquire user lock (one request at a time per user)
         if not _user_request_lock.acquire(user_id):
-            raise ValidationError("Another request is already in progress")
+            # Get TTL of existing lock to show how long user should wait
+            ttl = _user_request_lock.lock.get_ttl(user_id)
+            if ttl > 0:
+                elapsed = 180 - ttl  # Calculate how long the lock has been held
+                raise ValidationError(
+                    f"Another request is already in progress (started {elapsed}s ago, may take up to {ttl}s more)"
+                )
+            else:
+                # Lock expired or doesn't exist (race condition)
+                raise ValidationError("Another request is already in progress")
 
         files_manager: Optional[FilesManager] = None
         try:
@@ -369,6 +379,13 @@ class GoogleChatHandler(BaseHandler):
             # Add processing time to metadata
             metadata["processing_time_ms"] = processing_time_ms
 
+            # Log processing time for monitoring long-running requests
+            tools_used = metadata.get("tools_used", [])
+            logger.info(
+                f"[Google Chat] Request completed in {processing_time_ms}ms "
+                f"(user={user_id[:8]}..., tools={len(tools_used)})"
+            )
+
             # Format response as Google Chat Card
             return format_response_as_card(
                 response_text,
@@ -378,6 +395,7 @@ class GoogleChatHandler(BaseHandler):
 
         finally:
             _user_request_lock.release(user_id)
+            logger.debug(f"[Google Chat] Released lock for user {user_id[:8]}...")
 
 
 @router.post("/google-chat")
