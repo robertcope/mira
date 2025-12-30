@@ -402,8 +402,14 @@ class ToolRepository:
                     raise RuntimeError(f"Cannot invoke gated tool '{name}': Tool is not available")
                 # Gated tool is available - allow invocation to proceed
             else:
-                self.logger.error(f"Cannot invoke tool '{name}': Tool is not enabled")
-                raise RuntimeError(f"Cannot invoke tool '{name}': Tool is not enabled")
+                # Check if tool is enabled via user config - auto-enable if so
+                from tools.implementations.invokeother_tool import _is_tool_enabled_for_user
+                if _is_tool_enabled_for_user(name):
+                    self.logger.info(f"Auto-enabling user-configured tool: {name}")
+                    self.enable_tool(name)
+                else:
+                    self.logger.error(f"Cannot invoke tool '{name}': Tool is not enabled")
+                    raise RuntimeError(f"Cannot invoke tool '{name}': Tool is not enabled")
 
         if isinstance(params, str):
             try:

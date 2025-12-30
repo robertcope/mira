@@ -7,11 +7,14 @@ Tool hints are always visible via working memory, enabling intelligent loading d
 """
 
 # Standard library imports
+import json
 import logging
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 # Local imports
 from tools.repo import Tool
+from tools.registry import registry
+from utils.user_credentials import UserCredentialService
 
 # Type checking imports
 if TYPE_CHECKING:
@@ -21,6 +24,45 @@ if TYPE_CHECKING:
 
 # Configuration for invokeother_tool is defined in config/config.py (ToolConfig.invokeother_tool)
 # This tool is special-cased there rather than using registry self-registration
+
+
+def _is_tool_enabled_for_user(tool_name: str) -> bool:
+    """
+    Check if a tool is enabled for the current user.
+
+    Checks user-specific config first (stored via UserCredentialService),
+    falling back to system defaults from the tool's registered config class.
+
+    Args:
+        tool_name: Name of the tool to check
+
+    Returns:
+        True if tool is enabled, False otherwise
+    """
+    # First check user-specific config
+    try:
+        credential_service = UserCredentialService()
+        config_json = credential_service.get_credential(
+            credential_type="tool_config",
+            service_name=tool_name
+        )
+        if config_json:
+            user_config = json.loads(config_json)
+            # User explicitly set enabled status
+            if 'enabled' in user_config:
+                return user_config['enabled']
+    except Exception:
+        # Fall through to check defaults if user config retrieval fails
+        pass
+
+    # No user config or no 'enabled' key - check system defaults
+    config_class = registry.get(tool_name)
+    if config_class:
+        defaults = config_class()
+        return getattr(defaults, 'enabled', True)
+
+    # No registered config - default to enabled
+    return True
 
 
 # -------------------- MAIN TOOL CLASS --------------------
@@ -92,14 +134,10 @@ class InvokeOtherTool(Tool):
                 if tool_name in self.essential_tools or tool_name == self.name:
                     continue
 
-                # Skip tools disabled in config
-                from config import config
-                tool_config = getattr(config, tool_name, None)
-                if tool_config:
-                    is_enabled = getattr(tool_config, 'enabled', True)
-                    if not is_enabled:
-                        self.logger.debug(f"Skipping disabled tool {tool_name} in hints")
-                        continue
+                # Skip tools disabled for this user (checks user config, falls back to defaults)
+                if not _is_tool_enabled_for_user(tool_name):
+                    self.logger.debug(f"Skipping disabled tool {tool_name} in hints")
+                    continue
 
                 # Skip gated tools that are not currently available
                 if tool_name in self.tool_repo.gated_tools:
@@ -194,15 +232,11 @@ class InvokeOtherTool(Tool):
                     errors.append(f"{tool_name} not found")
                     continue
 
-                # Check if tool is enabled in config
-                from config import config
-                tool_config = getattr(config, tool_name, None)
-                if tool_config:
-                    is_enabled = getattr(tool_config, 'enabled', True)
-                    if not is_enabled:
-                        errors.append(f"{tool_name} is disabled in config (enabled=false)")
-                        self.logger.warning(f"Attempted to load disabled tool: {tool_name}")
-                        continue
+                # Check if tool is enabled for this user (checks user config, falls back to defaults)
+                if not _is_tool_enabled_for_user(tool_name):
+                    errors.append(f"{tool_name} is disabled in config (enabled=false)")
+                    self.logger.warning(f"Attempted to load disabled tool: {tool_name}")
+                    continue
 
                 # Check if gated tool is available
                 if tool_name in self.tool_repo.gated_tools:

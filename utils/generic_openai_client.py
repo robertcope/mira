@@ -599,6 +599,15 @@ class GenericOpenAIClient:
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse tool arguments: {arguments_str}")
                     arguments = {}
+
+                # Gemini sometimes wraps tool arguments in a "params" key - unwrap/merge if so
+                if isinstance(arguments, dict) and "params" in arguments:
+                    params_value = arguments.pop("params")
+                    if isinstance(params_value, dict):
+                        # Merge params into arguments (params values take precedence for conflicts)
+                        logger.debug(f"Unwrapping Gemini 'params' for {tc['function']['name']}: {list(params_value.keys())}")
+                        arguments = {**arguments, **params_value}
+
                 tool_block = SimpleNamespace(
                     type="tool_use",
                     id=tc["id"],
