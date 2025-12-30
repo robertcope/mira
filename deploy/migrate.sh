@@ -144,13 +144,15 @@ DB_SNAPSHOT_FILE="${BACKUP_DIR}/db_snapshot.json"
 capture_database_snapshot "$DB_SNAPSHOT_FILE" || exit 1
 
 if is_dry_run; then
-    dry_run_notice "Create PostgreSQL backup (pg_dump)"
     dry_run_notice "Export Vault secrets to JSON"
+    dry_run_notice "Create PostgreSQL backup (pg_dump)"
     dry_run_notice "Copy user data files"
     dry_run_notice "Backup Vault init keys"
 else
-    backup_postgresql_data || exit 1
+    # IMPORTANT: backup_vault_secrets MUST run first - it sets MIGRATE_DB_PASSWORD
+    # which backup_postgresql_data needs for macOS authentication
     backup_vault_secrets || exit 1
+    backup_postgresql_data || exit 1
     backup_user_data_files || exit 1
     backup_vault_init_keys || exit 1
     create_backup_manifest || exit 1
