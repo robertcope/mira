@@ -596,29 +596,6 @@ class TestLLMProviderToolPreparation:
         assert result == []
 
 
-class TestLLMProviderModelSelection:
-    """Test model selection logic."""
-
-    def test_select_model_defaults_to_configured_model(self, llm_provider):
-        """Verify _select_model() returns configured model by default."""
-        selected = llm_provider._select_model(last_response=None)
-
-        # Should return the reasoning model
-        assert selected == llm_provider.model
-
-    def test_select_model_with_text_response(self, llm_provider):
-        """Verify _select_model() uses reasoning model for text responses."""
-        messages = [
-            {"role": "user", "content": "Say hello"}
-        ]
-
-        response = llm_provider.generate_response(messages=messages, stream=False)
-        selected = llm_provider._select_model(last_response=response)
-
-        # Should use reasoning model
-        assert selected == llm_provider.model
-
-
 class TestCircuitBreaker:
     """Test CircuitBreaker for preventing infinite tool loops."""
 
@@ -637,18 +614,21 @@ class TestCircuitBreaker:
         assert should_continue is True
         assert reason == "First tool"
 
-    def test_circuit_breaker_stops_on_error(self):
-        """Verify CircuitBreaker stops when tool execution fails."""
+    def test_circuit_breaker_allows_one_retry_on_error(self):
+        """Verify CircuitBreaker allows ONE retry per tool before stopping."""
         breaker = CircuitBreaker()
 
-        # Record a tool error
+        # First error for a tool - should allow retry
         error = Exception("Tool failed")
         breaker.record_execution("test_tool", result=None, error=error)
-
         should_continue, reason = breaker.should_continue()
+        assert should_continue is True  # Allow retry
 
+        # Second error for SAME tool - should stop
+        breaker.record_execution("test_tool", result=None, error=error)
+        should_continue, reason = breaker.should_continue()
         assert should_continue is False
-        assert "Tool error" in reason
+        assert "failed after correction" in reason
 
     def test_circuit_breaker_stops_on_repeated_results(self):
         """Verify CircuitBreaker stops when getting repeated identical results."""
@@ -1420,33 +1400,6 @@ class TestLLMProviderAPIParameterConstruction:
         assert hasattr(response, 'usage')
         assert isinstance(response.content, list)
 
-    def test_thinking_disabled_for_execution_model(self, llm_provider):
-        """Verify _select_model returns execution model for simple tools."""
-        # Mock a response with tool_use that contains a simple tool
-        if not llm_provider.execution_model or not llm_provider.simple_tools:
-            pytest.skip("Execution model or simple_tools not configured")
-
-        # Get a simple tool name from config
-        simple_tool_name = next(iter(llm_provider.simple_tools))
-
-        # Create a mock response with tool_use
-        mock_response = Mock()
-        mock_response.stop_reason = "tool_use"
-
-        # Create mock tool_use block
-        mock_tool_block = Mock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = simple_tool_name
-
-        mock_response.content = [mock_tool_block]
-
-        # Test that _select_model returns execution_model for simple tools
-        selected = llm_provider._select_model(mock_response)
-
-        assert selected == llm_provider.execution_model
-        assert selected != llm_provider.model  # Should be different from reasoning model
-
-
 class TestLLMProviderResponseUtilities:
     """Test response utility methods."""
 
@@ -1612,26 +1565,6 @@ class TestLLMProviderComplexMessageFormats:
         assert isinstance(system, list)
         assert len(system) == 2
         assert system[1].get("cache_control") == {"type": "ephemeral"}
-
-
-class TestLLMProviderModelSelectionWithTools:
-    """Test model selection based on tool usage."""
-
-    def test_select_model_with_tool_use_stop_reason(self, llm_provider):
-        """Verify _select_model() checks tool names when stop_reason is tool_use."""
-        # Create a mock response with tool_use stop_reason
-        # We can't easily create this without a real tool call, but we can test the logic
-
-        # Test with no response (default case)
-        selected = llm_provider._select_model(last_response=None)
-        assert selected == llm_provider.model
-
-    def test_select_model_returns_reasoning_model_by_default(self, llm_provider):
-        """Verify _select_model() defaults to reasoning model."""
-        selected = llm_provider._select_model(last_response=None)
-
-        assert selected == llm_provider.model
-        assert "haiku" in selected.lower() or "sonnet" in selected.lower()
 
 
 class TestLLMProviderCacheUsageLogging:

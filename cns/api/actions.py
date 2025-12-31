@@ -1660,8 +1660,21 @@ class ContinuumDomainHandler(BaseDomainHandler):
 
             segment_id = sentinel.metadata.get("segment_id")
 
-            # Set virtual last message time to postpone collapse
-            virtual_time = utc_now() + timedelta(minutes=minutes)
+            # Stack extensions: add to existing virtual time if it's in the future
+            existing_virtual_str = sentinel.metadata.get("virtual_last_message_time")
+            now = utc_now()
+
+            if existing_virtual_str:
+                from datetime import datetime
+                existing_virtual = datetime.fromisoformat(existing_virtual_str)
+                if existing_virtual > now:
+                    # Add to existing future time
+                    virtual_time = existing_virtual + timedelta(minutes=minutes)
+                else:
+                    # Existing time is in the past, start fresh
+                    virtual_time = now + timedelta(minutes=minutes)
+            else:
+                virtual_time = now + timedelta(minutes=minutes)
             success = continuum_repo.set_segment_virtual_last_message_time(
                 continuum.id,
                 self.user_id,
@@ -1703,10 +1716,12 @@ class ContinuumDomainHandler(BaseDomainHandler):
             segment_id = sentinel.metadata.get("segment_id")
             virtual_time_str = sentinel.metadata.get("virtual_last_message_time")
 
-            # Get last real message time
-            last_message = continuum_repo.get_latest_message(continuum.id, self.user_id)
-            if last_message:
-                last_activity = last_message.created_at
+            # Get last real message time from segment messages
+            segment_messages = continuum_repo.load_segment_messages(
+                continuum.id, self.user_id, sentinel.created_at
+            )
+            if segment_messages:
+                last_activity = segment_messages[-1].created_at
             else:
                 last_activity = sentinel.created_at
 

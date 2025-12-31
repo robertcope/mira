@@ -121,6 +121,14 @@ class Continuum:
     def get_messages_for_api(self) -> List[dict]:
         """Get messages formatted for LLM API with proper prefixes and cache control."""
         from cns.services.segment_helpers import format_segment_for_display
+        from utils.timezone_utils import convert_from_utc
+        from utils.user_context import get_user_preferences
+
+        # Get user timezone for timestamp injection - no fallback, skip if unavailable
+        try:
+            user_tz = get_user_preferences().timezone
+        except Exception:
+            user_tz = None
 
         formatted_messages = []
 
@@ -132,6 +140,22 @@ class Continuum:
             if (message.metadata.get('is_segment_boundary') and
                 message.metadata.get('status') == 'collapsed'):
                 content = format_segment_for_display(message)
+
+            # Inject ephemeral timestamps for user/assistant messages (not persisted)
+            elif (user_tz is not None and
+                  message.role in ("user", "assistant") and
+                  not message.metadata.get('is_segment_boundary') and
+                  not message.metadata.get('system_notification')):
+                local_dt = convert_from_utc(message.created_at, user_tz)
+                timestamp = local_dt.strftime("%-I:%M%p").lower()
+                if isinstance(content, str):
+                    content = f"[{timestamp}] {content}"
+                elif isinstance(content, list):
+                    # Multimodal: inject into first text block
+                    for block in content:
+                        if block.get("type") == "text":
+                            block["text"] = f"[{timestamp}] {block['text']}"
+                            break
 
             if message.role == "assistant" and message.metadata.get("has_tool_calls", False):
                 # Assistant message with tool calls

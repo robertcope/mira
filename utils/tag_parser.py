@@ -7,6 +7,80 @@ import re
 from typing import Dict, Any, Optional
 
 
+# =============================================================================
+# Memory ID Formatting Utilities
+# =============================================================================
+
+MEMORY_ID_PREFIX = "mem_"
+MEMORY_ID_LENGTH = 8
+
+
+def format_memory_id(uuid_str: str) -> str:
+    """
+    Format a full UUID to the shortened mem_XXXXXXXX display format.
+
+    Preserves case from the UUID for visual distinction between IDs.
+
+    Args:
+        uuid_str: Full UUID string (with or without dashes)
+
+    Returns:
+        Formatted ID like "mem_5E9a8D3c" (mixed case preserved)
+        Empty string if input is empty/None
+    """
+    if not uuid_str:
+        return ""
+    clean = uuid_str.replace('-', '')
+    return f"{MEMORY_ID_PREFIX}{clean[:MEMORY_ID_LENGTH]}"
+
+
+def parse_memory_id(formatted_id: str) -> str:
+    """
+    Extract the 8-character ID portion from a formatted memory ID.
+
+    Handles both:
+    - "mem_5E9a8D3c" -> "5E9a8D3c"
+    - "5E9a8D3c" -> "5E9a8D3c" (passthrough for raw IDs)
+
+    Args:
+        formatted_id: Either "mem_XXXXXXXX" or raw "XXXXXXXX"
+
+    Returns:
+        The 8-character ID portion, empty string if invalid
+    """
+    if not formatted_id:
+        return ""
+    if formatted_id.startswith(MEMORY_ID_PREFIX):
+        return formatted_id[len(MEMORY_ID_PREFIX):]
+    return formatted_id
+
+
+def match_memory_id(full_uuid: str, short_id: str) -> bool:
+    """
+    Check if a shortened ID matches a full UUID.
+
+    Case-insensitive comparison for robust matching.
+
+    Args:
+        full_uuid: Full UUID string
+        short_id: Short ID (with or without mem_ prefix)
+
+    Returns:
+        True if the short ID matches the UUID's prefix
+    """
+    if not full_uuid or not short_id:
+        return False
+
+    uuid_prefix = full_uuid.replace('-', '')[:MEMORY_ID_LENGTH].lower()
+    parsed_short = parse_memory_id(short_id).lower()
+    return uuid_prefix == parsed_short
+
+
+# =============================================================================
+# Tag Parser Class
+# =============================================================================
+
+
 class TagParser:
     """
     Service for parsing semantic tags from assistant responses.
@@ -16,9 +90,15 @@ class TagParser:
 
     # Tag patterns
     ERROR_ANALYSIS_PATTERN = re.compile(r'<error_analysis\s+error_id=["\']([^"\']+)["\']>(.*?)</error_analysis>', re.DOTALL | re.IGNORECASE)
-    # Pattern for memory references: <mira:memory_ref="UUID" />
-    MEMORY_REF_PATTERN = re.compile(
-        r'<mira:memory_ref\s*=\s*["\']([a-f0-9-]{36})["\']?\s*/?>',
+    # Pattern for memory references block: <mira:memory_refs>mem_XXX, mem_YYY</mira:memory_refs>
+    MEMORY_REFS_PATTERN = re.compile(
+        r'<mira:memory_refs>(.*?)</mira:memory_refs>',
+        re.IGNORECASE | re.DOTALL
+    )
+    # Pattern to extract individual memory IDs from the block
+    # UUIDs only contain hex chars (0-9, a-f)
+    MEMORY_ID_PATTERN = re.compile(
+        r'mem_([a-fA-F0-9]{8})',
         re.IGNORECASE
     )
     # Pattern for emotion emoji: <mira:my_emotion>emoji</mira:my_emotion>
@@ -56,10 +136,14 @@ class TagParser:
                 'analysis': match.group(2).strip()
             })
 
-        # Extract memory references
+        # Extract memory references from <mira:memory_refs> block
         memory_refs = []
-        for match in self.MEMORY_REF_PATTERN.finditer(response_text):
-            memory_refs.append(match.group(1))
+        refs_match = self.MEMORY_REFS_PATTERN.search(response_text)
+        if refs_match:
+            refs_content = refs_match.group(1)
+            # Extract individual mem_XXXXXXXX IDs from the block
+            for id_match in self.MEMORY_ID_PATTERN.finditer(refs_content):
+                memory_refs.append(id_match.group(1))
 
         # Extract emotion emoji
         emotion = None

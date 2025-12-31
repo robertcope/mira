@@ -108,8 +108,8 @@ CREATE TABLE IF NOT EXISTS account_tiers (
 );
 
 INSERT INTO account_tiers (name, model, thinking_budget, description, display_order, provider, endpoint_url, api_key_name, show_locked, locked_message) VALUES
-    ('balanced', 'google/gemini-3-flash-preview', 0, 'Gemini 3 Flash', 1, 'generic', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', FALSE, NULL),
-    ('advanced', 'google/gemini-3-pro-preview', 0, 'Gemini 3 Pro', 2, 'generic', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', TRUE, 'Donate to MIRA to unlock Gemini 3 Pro'),
+    ('fast', 'google/gemini-3-flash-preview', 0, 'Gemini 3 Flash', 1, 'generic', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', FALSE, NULL),
+    ('balanced', 'claude-sonnet-4-20250514', 0, 'Sonnet 4', 2, 'anthropic', NULL, NULL, FALSE, NULL),
     ('nuanced', 'claude-opus-4-5-20251101', 4096, 'Opus w/ Thinking', 3, 'anthropic', NULL, NULL, FALSE, NULL)
 ON CONFLICT (name) DO NOTHING;
 
@@ -124,7 +124,6 @@ CREATE TABLE IF NOT EXISTS internal_llm (
 );
 
 INSERT INTO internal_llm (name, model, endpoint_url, api_key_name, description) VALUES
-    ('execution', 'openai/gpt-oss-20b', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key', 'Fast model for tool routing'),
     ('analysis', 'openai/gpt-oss-20b', 'https://api.groq.com/openai/v1/chat/completions', 'provider_key', 'Model for fingerprint generation and memory evacuation'),
     ('summary', 'claude-haiku-4-5', 'https://api.anthropic.com/v1/messages', 'anthropic_key', 'Model for segment summary generation'),
     ('injection_defense', 'meta-llama/llama-3.1-8b-instruct', 'https://openrouter.ai/api/v1/chat/completions', 'provider_key', 'Model for prompt injection detection')
@@ -152,7 +151,7 @@ CREATE TABLE IF NOT EXISTS users (
     -- LLM tier preference
     llm_tier VARCHAR(20) DEFAULT 'balanced' REFERENCES account_tiers(name),
     -- Maximum tier this user can access (hierarchical: fast < balanced < nuanced)
-    max_tier VARCHAR(20) NOT NULL DEFAULT 'nuanced' REFERENCES account_tiers(name),
+    max_tier VARCHAR(20) NOT NULL DEFAULT 'balanced' REFERENCES account_tiers(name),
 
     -- Donation tracking (suppresses donation banner for 21 days when set)
     last_donated_at TIMESTAMP WITH TIME ZONE

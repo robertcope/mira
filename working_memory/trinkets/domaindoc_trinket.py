@@ -28,6 +28,9 @@ class DomaindocTrinket(EventAwareTrinket):
     collapsed sections show only headers with state indicator.
     """
 
+    # Domaindocs are reference material that rarely changes - cache for efficiency
+    cache_policy = True
+
     def _get_variable_name(self) -> str:
         """Return variable name for system prompt composition."""
         return "domaindoc"

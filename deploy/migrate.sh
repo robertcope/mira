@@ -203,12 +203,24 @@ CONFIG_KAGI_KEY="${CONFIG_KAGI_KEY:-}"
 CONFIG_INSTALL_PLAYWRIGHT="no"     # Skip playwright during migration
 CONFIG_INSTALL_SYSTEMD="yes"       # Recreate systemd services
 CONFIG_START_MIRA_NOW="no"         # Don't auto-start until verified
-CONFIG_OFFLINE_MODE="no"           # Will be detected by existing schema
-CONFIG_OLLAMA_MODEL=""
+
+# Detect offline mode from backed-up API keys
+# If anthropic_key is placeholder, original install was offline mode
+if [ "$CONFIG_ANTHROPIC_KEY" = "OFFLINE_MODE_PLACEHOLDER" ]; then
+    CONFIG_OFFLINE_MODE="yes"
+    CONFIG_OLLAMA_MODEL="qwen3:1.7b"  # Default offline model
+else
+    CONFIG_OFFLINE_MODE="no"
+    CONFIG_OLLAMA_MODEL=""
+fi
 
 echo -e "${CHECKMARK}"
 print_info "Database password: preserved from backup"
-print_info "API keys: preserved from backup"
+if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
+    print_info "API keys: offline mode detected (will configure Ollama endpoints)"
+else
+    print_info "API keys: preserved from backup"
+fi
 echo ""
 
 # ============================================================================
@@ -223,6 +235,18 @@ if is_dry_run; then
     dry_run_skip "Stop Valkey service"
     print_info "PostgreSQL would remain running (needed for schema operations)"
 else
+    # Check if MIRA was running before we stop it (to restore state at end)
+    MIRA_WAS_RUNNING="no"
+    if [ "$OS" = "linux" ]; then
+        if sudo systemctl is-active --quiet mira.service 2>/dev/null; then
+            MIRA_WAS_RUNNING="yes"
+        fi
+    else
+        if lsof -ti :1993 >/dev/null 2>&1; then
+            MIRA_WAS_RUNNING="yes"
+        fi
+    fi
+
     # Stop MIRA first
     echo -ne "${DIM}${ARROW}${RESET} Stopping MIRA... "
     if [ "$OS" = "linux" ]; then
@@ -332,21 +356,68 @@ else
     export CONFIG_OFFLINE_MODE
     export CONFIG_OLLAMA_MODEL
 
+    # Track installation progress for rollback
+    PHASE6_FAILED=""
+
+    # Temporarily disable exit-on-error to handle failures gracefully
+    set +e
+
     # dependencies.sh - System packages (idempotent)
     source "${SCRIPT_DIR}/dependencies.sh"
+    if [ $? -ne 0 ]; then
+        PHASE6_FAILED="dependencies.sh"
+    fi
     echo ""
 
     # python.sh - Fresh MIRA clone, venv
-    source "${SCRIPT_DIR}/python.sh"
-    echo ""
+    if [ -z "$PHASE6_FAILED" ]; then
+        source "${SCRIPT_DIR}/python.sh"
+        if [ $? -ne 0 ]; then
+            PHASE6_FAILED="python.sh"
+        fi
+        echo ""
+    fi
 
     # vault.sh - Fresh Vault initialization
-    source "${SCRIPT_DIR}/vault.sh"
-    echo ""
+    if [ -z "$PHASE6_FAILED" ]; then
+        source "${SCRIPT_DIR}/vault.sh"
+        if [ $? -ne 0 ]; then
+            PHASE6_FAILED="vault.sh"
+        fi
+        echo ""
+    fi
 
     # postgresql.sh - Fresh schema deployment
-    source "${SCRIPT_DIR}/postgresql.sh"
-    echo ""
+    if [ -z "$PHASE6_FAILED" ]; then
+        source "${SCRIPT_DIR}/postgresql.sh"
+        if [ $? -ne 0 ]; then
+            PHASE6_FAILED="postgresql.sh"
+        fi
+        echo ""
+    fi
+
+    # Re-enable exit-on-error
+    set -e
+
+    # Handle Phase 6 failure
+    if [ -n "$PHASE6_FAILED" ]; then
+        echo ""
+        print_error "Fresh installation failed during: $PHASE6_FAILED"
+        echo ""
+        echo -e "${BOLD}${YELLOW}Would you like to attempt automatic rollback?${RESET}"
+        echo -e "${DIM}This will restore your system to its pre-migration state.${RESET}"
+        echo ""
+        read -p "Attempt rollback? (yes/no): " confirm_rollback
+        if [ "$confirm_rollback" = "yes" ]; then
+            rollback_from_backup "$BACKUP_DIR"
+            finalize_migration_log "FAILED - ROLLED BACK"
+        else
+            print_info "Rollback skipped. Manual recovery may be needed."
+            print_info "Backup available at: $BACKUP_DIR"
+            finalize_migration_log "FAILED"
+        fi
+        exit 1
+    fi
 
     print_success "Fresh installation complete"
 fi
@@ -474,9 +545,35 @@ else
     print_warning "After verifying everything works, delete the backup:"
     print_info "  sudo rm -rf $BACKUP_DIR"
     echo ""
-    print_info "Start MIRA with: mira"
-    if [ "$OS" = "linux" ]; then
-        print_info "Or via systemd: sudo systemctl start mira"
+
+    # Restart MIRA if it was running before migration
+    if [ "$MIRA_WAS_RUNNING" = "yes" ]; then
+        echo -ne "${DIM}${ARROW}${RESET} Restarting MIRA (was running before migration)... "
+        if [ "$OS" = "linux" ]; then
+            if sudo systemctl start mira.service 2>/dev/null; then
+                echo -e "${CHECKMARK}"
+                print_success "MIRA is running"
+            else
+                echo -e "${ERROR}"
+                print_warning "Failed to start MIRA automatically"
+                print_info "Start manually with: sudo systemctl start mira"
+            fi
+        else
+            # macOS - start in background
+            if nohup mira >/dev/null 2>&1 &; then
+                echo -e "${CHECKMARK}"
+                print_success "MIRA is running"
+            else
+                echo -e "${ERROR}"
+                print_warning "Failed to start MIRA automatically"
+                print_info "Start manually with: mira"
+            fi
+        fi
+    else
+        print_info "Start MIRA with: mira"
+        if [ "$OS" = "linux" ]; then
+            print_info "Or via systemd: sudo systemctl start mira"
+        fi
     fi
     echo ""
 fi

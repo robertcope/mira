@@ -32,10 +32,10 @@ Be ruthless - "tangentially related" is not good enough. Focus on memories that 
 
 ## Output Format
 
-Return ONLY the 8-character IDs of memories to KEEP, one per line:
+Return ONLY the memory IDs to KEEP, one per line:
 <survivors>
-a1b2c3d4
-e5f6g7h8
+mem_a1B2c3D4
+mem_e5F6g7H8
 </survivors>
 
 No explanation - only the survivor IDs in the structured block.

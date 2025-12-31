@@ -13,6 +13,7 @@ from typing import List, Dict, Any, Set
 from config.config import ProactiveConfig
 from cns.core.continuum import Continuum
 from clients.vault_client import get_api_key
+from utils.tag_parser import format_memory_id
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +181,10 @@ class MemoryEvacuator:
                 )
                 return memories
 
-            # Filter to survivors
+            # Filter to survivors (compare by 8-char prefix, case-insensitive)
             survivors = [
                 m for m in memories
-                if self._shorten_id(m.get('id', '')) in survivor_ids
+                if m.get('id', '').replace('-', '')[:8].lower() in survivor_ids
             ]
 
             logger.debug(
@@ -209,7 +210,7 @@ class MemoryEvacuator:
         """
         lines = []
         for m in memories:
-            short_id = self._shorten_id(m.get('id', ''))
+            formatted_id = format_memory_id(m.get('id', ''))
             imp = m.get('importance_score', 0.5)
             sim = m.get('similarity_score') or 0.0
             inbound = m.get('inbound_links', [])
@@ -219,7 +220,7 @@ class MemoryEvacuator:
             text = m.get('text', '')
 
             lines.append(
-                f"- {short_id} [imp:{imp:.2f} | sim:{sim:.2f} | links:{links} | mentions:{mentions}] - {text}"
+                f"- {formatted_id} [imp:{imp:.2f} | sim:{sim:.2f} | links:{links} | mentions:{mentions}] - {text}"
             )
 
         return "\n".join(lines)
@@ -302,9 +303,11 @@ class MemoryEvacuator:
 
         survivors_block = survivors_match.group(1)
 
-        # Extract 8-char hex IDs (one per line)
+        # Extract prefixed memory IDs (one per line)
+        # Format: mem_a1B2c3D4
+        # UUIDs only contain hex chars (0-9, a-f)
         id_matches = re.findall(
-            r'\b([a-f0-9]{8})\b',
+            r'\bmem_([a-fA-F0-9]{8})\b',
             survivors_block,
             re.IGNORECASE
         )
@@ -313,13 +316,6 @@ class MemoryEvacuator:
         logger.debug(f"Parsed {len(survivor_ids)} survivor IDs from response")
 
         return survivor_ids
-
-    @staticmethod
-    def _shorten_id(memory_id: str) -> str:
-        """Shorten UUID to 8-char hex prefix for matching."""
-        if not memory_id:
-            return ""
-        return memory_id.replace('-', '')[:8].lower()
 
     def _is_segment_summary(self, message) -> bool:
         """Check if message is a collapsed segment summary."""

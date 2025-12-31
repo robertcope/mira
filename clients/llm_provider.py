@@ -104,9 +104,17 @@ class CircuitBreaker:
         if not self.tool_results:
             return True, "First tool"
 
-        # Check for any errors
-        if self.tool_results[-1][2] is not None:
-            return False, f"Tool error: {self.tool_results[-1][2]}"
+        last_tool, _, last_error = self.tool_results[-1]
+
+        # Check for errors - allow ONE retry per tool before triggering
+        if last_error is not None:
+            # Count previous errors for this SAME tool
+            prior_errors = sum(1 for name, _, err in self.tool_results[:-1]
+                              if name == last_tool and err is not None)
+            if prior_errors > 0:
+                # Second failure for same tool - give up
+                return False, f"Tool '{last_tool}' failed after correction attempt: {last_error}"
+            # First failure - allow retry (model will see schema in error message)
 
         # Check for repeated results (last 2 executions) - loop detection
         if len(self.tool_results) >= 2:
@@ -234,32 +242,12 @@ class LLMProvider:
         self.logger = logging.getLogger("llm_provider")
 
         # Apply configuration with overrides
-        self.model = model if model is not None else config.api.model  # Reasoning model
-        self.simple_tools = set(config.api.simple_tools)  # Convert to set for fast lookup
+        self.model = model if model is not None else config.api.model
         self.max_tokens = max_tokens if max_tokens is not None else config.api.max_tokens
         self.temperature = temperature if temperature is not None else config.api.temperature
         self.timeout = timeout if timeout is not None else config.api.timeout
         self.api_key = api_key if api_key is not None else config.api_key
         self.enable_prompt_caching = enable_prompt_caching
-
-        # Get execution model config from database
-        from utils.user_context import get_internal_llm
-        execution_config = get_internal_llm('execution')
-        self.execution_model = execution_config.model
-        self.execution_endpoint = execution_config.endpoint_url
-
-        # Get execution model API key from Vault (None for local providers like Ollama)
-        if execution_config.api_key_name:
-            try:
-                from clients.vault_client import get_api_key
-                self.execution_api_key = get_api_key(execution_config.api_key_name)
-                if not self.execution_api_key:
-                    self.logger.warning(f"Execution model API key '{execution_config.api_key_name}' not found in Vault - execution model disabled")
-            except Exception as e:
-                self.logger.error(f"Failed to get execution model API key: {e}")
-                self.execution_api_key = None
-        else:
-            self.execution_api_key = None  # Local provider (Ollama) - no API key needed
 
         # Extended thinking configuration
         self.extended_thinking = config.api_server.extended_thinking
@@ -299,9 +287,7 @@ class LLMProvider:
         self.firehose_enabled = bool(os.environ.get('MIRA_FIREHOSE'))
 
         self.logger.info(f"LLM Provider initialized with Anthropic SDK")
-        self.logger.info(f"Reasoning model: {self.model}")
-        self.logger.info(f"Execution model: {self.execution_model}")
-        self.logger.info(f"Simple tools for execution model: {self.simple_tools}")
+        self.logger.info(f"Model: {self.model}")
         if self.tool_repo:
             self.logger.info("Tool execution enabled")
         else:
@@ -312,28 +298,6 @@ class LLMProvider:
             self.logger.info("Emergency fallback enabled")
         if self.firehose_enabled:
             self.logger.info("Firehose mode enabled - logging to firehose_output.json")
-
-    def _select_model(self, last_response: Optional[anthropic.types.Message]) -> str:
-        """
-        Select optimal model based on last response tool usage.
-
-        Uses execution model (Haiku) for simple tool operations, reasoning model (Sonnet)
-        for everything else.
-
-        Args:
-            last_response: Previous API response containing tool calls
-
-        Returns:
-            Model identifier to use for next API call
-        """
-        if last_response and last_response.stop_reason == "tool_use":
-            tool_names = {b.name for b in last_response.content if b.type == "tool_use"}
-            if tool_names and tool_names.issubset(self.simple_tools):
-                self.logger.debug(f"Using execution model ({self.execution_model}) for simple tools: {tool_names}")
-                return self.execution_model
-
-        # Default to reasoning model for all other cases
-        return self.model
 
     def _emit_events_from_response(self, response: anthropic.types.Message) -> Generator[StreamEvent, None, None]:
         """
@@ -507,66 +471,6 @@ class LLMProvider:
         tools_copy[-1]["cache_control"] = {"type": "ephemeral"}
         return tools_copy
 
-    def _convert_tool_content_to_text(self, messages: List[Dict]) -> List[Dict]:
-        """
-        Convert tool_use and tool_result blocks to text for execution model.
-
-        Instead of stripping tool content (which loses context), this converts
-        tool interactions to human-readable text so the execution model can
-        see what tools were called and what results were returned.
-
-        Args:
-            messages: Anthropic-format messages with potential tool content
-
-        Returns:
-            Messages with tool content converted to text
-        """
-        converted = []
-        for msg in messages:
-            content = msg.get("content")
-
-            # Handle string content (already text-only)
-            if isinstance(content, str):
-                converted.append(msg)
-                continue
-
-            # Handle list content - convert tool blocks to text
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-
-                    block_type = block.get("type")
-
-                    if block_type == "text":
-                        text_parts.append(block.get("text", ""))
-
-                    elif block_type == "tool_use":
-                        # Convert tool call to readable text
-                        tool_name = block.get("name", "unknown")
-                        tool_input = block.get("input", {})
-                        text_parts.append(f"[Called {tool_name}: {tool_input}]")
-
-                    elif block_type == "tool_result":
-                        # Convert tool result to readable text
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, (dict, list)):
-                            result_content = json.dumps(result_content)
-                        text_parts.append(f"[Result: {result_content}]")
-
-                # Skip message if no content after conversion
-                if not text_parts:
-                    continue
-
-                # Join all parts into single string
-                converted.append({**msg, "content": "\n".join(text_parts)})
-            else:
-                # Unknown format, pass through
-                converted.append(msg)
-
-        return converted
-
     def generate_response(
         self,
         messages: List[Dict[str, str]],
@@ -704,26 +608,12 @@ class LLMProvider:
                 # Agentic loop for generic providers with real-time streaming
                 current_messages = list(messages)  # Copy to avoid mutating original
                 circuit_breaker = CircuitBreaker()
-                last_generic_response = None
 
                 # Import streaming dependencies
                 from utils.generic_openai_client import GenericOpenAIClient, GenericOpenAIResponse
                 from types import SimpleNamespace
 
                 while True:
-                    # Select endpoint/model for this iteration based on previous response
-                    current_endpoint = endpoint_url
-                    current_model = model_override
-                    current_api_key = kwargs.get('api_key_override')
-
-                    if last_generic_response and self.execution_api_key:
-                        tool_names = {b.name for b in last_generic_response.content if b.type == "tool_use"}
-                        if tool_names and tool_names.issubset(self.simple_tools):
-                            self.logger.debug(f"Generic: using execution model for simple tools: {tool_names}")
-                            current_endpoint = self.execution_endpoint
-                            current_model = self.execution_model
-                            current_api_key = self.execution_api_key
-
                     # Prepare for streaming
                     system_prompt, prepared_messages = self._prepare_messages(current_messages)
 
@@ -735,10 +625,11 @@ class LLMProvider:
 
                     # Create generic client for streaming
                     temperature = kwargs.get('temperature', self.temperature)
+                    api_key = kwargs.get('api_key_override')
                     generic_client = GenericOpenAIClient(
-                        endpoint=current_endpoint,
-                        model=current_model,
-                        api_key=current_api_key,
+                        endpoint=endpoint_url,
+                        model=model_override,
+                        api_key=api_key,
                         timeout=self.timeout,
                         max_tokens=self.max_tokens,
                         temperature=temperature
@@ -753,8 +644,8 @@ class LLMProvider:
                         messages=prepared_messages,
                         tools=generic_tools,
                         provider="generic",
-                        endpoint=current_endpoint,
-                        model_override=current_model
+                        endpoint=endpoint_url,
+                        model_override=model_override
                     )
 
                     # Stream response with real-time event emission
@@ -852,7 +743,6 @@ class LLMProvider:
                         usage={"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
                         reasoning_details=accumulated_reasoning_details or None
                     )
-                    last_generic_response = response
 
                     # Check for tool_use blocks
                     tool_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -900,7 +790,18 @@ class LLMProvider:
                                 )
                             except Exception as e:
                                 self.logger.error(f"Tool execution failed for {block.name}: {e}")
-                                result_str = f"Error: {e}"
+                                # Include schema for parameter validation errors to help model correct itself
+                                schema_hint = ""
+                                error_str = str(e).lower()
+                                is_param_error = isinstance(e, ValueError) or any(
+                                    kw in error_str for kw in ["unknown operation", "invalid", "required", "missing", "parameter"]
+                                )
+                                if is_param_error and self.tool_repo:
+                                    schema = self.tool_repo.get_tool_definition(block.name)
+                                    if schema:
+                                        props = schema.get("input_schema", {}).get("properties", {})
+                                        schema_hint = f"\n\nCORRECT PARAMETERS:\n{json.dumps(props, indent=2)}"
+                                result_str = f"Error: {e}{schema_hint}"
                                 result = None
                                 error = e
                                 yield ToolErrorEvent(
@@ -1133,7 +1034,7 @@ class LLMProvider:
                 system_param = None
 
             # Determine if thinking should be enabled (respect explicit override, otherwise use instance config)
-            use_thinking = kwargs.get('thinking_enabled', self.extended_thinking and selected_model != self.execution_model)
+            use_thinking = kwargs.get('thinking_enabled', self.extended_thinking)
             thinking_budget = kwargs.get('thinking_budget', self.extended_thinking_budget)
 
             # Add thinking budget to max_tokens when thinking is enabled
@@ -1268,33 +1169,8 @@ class LLMProvider:
             yield from self._emit_events_from_response(response)
             return
 
-        # Select model (use override if provided, otherwise default to reasoning model)
+        # Select model (use override if provided, otherwise default)
         selected_model = model_override if model_override else self.model
-
-        # Route execution model to OpenRouter (non-streaming, no tools - text generation only)
-        if selected_model == self.execution_model and self.execution_api_key:
-            self.logger.debug(f"Routing execution model to OpenRouter: {self.execution_model}")
-            # Convert tool content to text so execution model sees what was done
-            execution_messages = self._convert_tool_content_to_text(messages)
-            # Use task-focused system prompt - full prompt contains tool descriptions that
-            # cause the model to generate tool calls even when tools array is empty.
-            # Execution model's role: synthesize tool results into user-facing response.
-            execution_system = (
-                "You are an AI assistant responding to the user. Tools have already been "
-                "executed and their results are reflected in the conversation. Your task is "
-                "to synthesize this information into a clear, helpful response. "
-                "Do not attempt to call tools or generate JSON - respond conversationally."
-            )
-            response = self._generate_non_streaming(
-                execution_messages, None,  # No tools - execution model only generates text responses
-                endpoint_url=self.execution_endpoint,
-                model_override=self.execution_model,
-                api_key_override=self.execution_api_key,
-                system_override=execution_system,
-                **kwargs
-            )
-            yield from self._emit_events_from_response(response)
-            return
 
         # Adjust max_tokens for model constraints (Haiku: 8192, Sonnet: 10000+)
         max_tokens = self.max_tokens
@@ -1330,7 +1206,7 @@ class LLMProvider:
 
         try:
             # Determine if thinking should be enabled (respect explicit override, otherwise use instance config)
-            use_thinking = kwargs.get('thinking_enabled', self.extended_thinking and selected_model != self.execution_model)
+            use_thinking = kwargs.get('thinking_enabled', self.extended_thinking)
             thinking_budget = kwargs.get('thinking_budget', self.extended_thinking_budget)
 
             # Add thinking budget to max_tokens when thinking is enabled
@@ -1473,21 +1349,15 @@ class LLMProvider:
         tools: List[Dict[str, Any]],
         **kwargs
     ) -> Generator[StreamEvent, None, None]:
-        """Execute with tool loop using Anthropic format with dynamic model selection."""
+        """Execute with tool loop using Anthropic format."""
         circuit_breaker = CircuitBreaker()
         current_messages = messages.copy()
-        last_response = None  # Track previous response for model selection
 
-        # Check for user model preference (overrides dynamic selection)
+        # Check for user model preference
         user_model_preference = kwargs.get('model_preference')
+        selected_model = user_model_preference if user_model_preference else self.model
 
         while True:
-            # Select model: user preference takes precedence, otherwise dynamic selection
-            if user_model_preference:
-                selected_model = user_model_preference
-            else:
-                selected_model = self._select_model(last_response)
-
             # Stream LLM response with selected model
             response = None
             for event in self._stream_response(current_messages, tools, **{**kwargs, 'model_override': selected_model}):
@@ -1512,9 +1382,6 @@ class LLMProvider:
             # Add assistant message with tool calls
             assistant_message = self._build_assistant_message(response)
             current_messages.append(assistant_message)
-
-            # Update last_response for next iteration's model selection
-            last_response = response
 
             # Execute all tools in parallel
             # Emit executing events immediately
@@ -1564,7 +1431,18 @@ class LLMProvider:
 
                     except Exception as e:
                         self.logger.error(f"Tool execution failed for {tool_name}: {e}")
-                        tool_result_content = f"Error: {e}"
+                        # Include schema for parameter validation errors to help model correct itself
+                        schema_hint = ""
+                        error_str = str(e).lower()
+                        is_param_error = isinstance(e, ValueError) or any(
+                            kw in error_str for kw in ["unknown operation", "invalid", "required", "missing", "parameter"]
+                        )
+                        if is_param_error and self.tool_repo:
+                            schema = self.tool_repo.get_tool_definition(tool_name)
+                            if schema:
+                                props = schema.get("input_schema", {}).get("properties", {})
+                                schema_hint = f"\n\nCORRECT PARAMETERS:\n{json.dumps(props, indent=2)}"
+                        tool_result_content = f"Error: {e}{schema_hint}"
                         error = e
                         result = None
 
@@ -1580,7 +1458,8 @@ class LLMProvider:
                     # Store result for batching
                     tool_results.append({
                         "tool_use_id": tool_id,
-                        "content": tool_result_content
+                        "content": tool_result_content,
+                        **({"is_error": True} if error else {})
                     })
 
             # Check circuit breaker after all tools complete

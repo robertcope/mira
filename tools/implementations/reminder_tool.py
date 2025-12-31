@@ -50,14 +50,40 @@ class ReminderTool(Tool):
 
     anthropic_schema = {
         "name": "reminder_tool",
-        "description": "Manages scheduled reminders with contact information integration. Use this tool when the user wants to create, view, or manage reminders about tasks, follow-ups, or appointments. You can also create internal reminders for yourself using category='internal' to track things you need to remember or follow up on later.",
+        "description": """Manages scheduled reminders with contact integration.
+
+OPERATIONS (use exactly one):
+
+• add_reminder - Create a new reminder
+  Required: title, date
+  Optional: description, contact_name, category, additional_notes
+
+• get_reminders - Query reminders by date
+  Required: date_type (today|tomorrow|upcoming|past|all|date|range|overdue)
+  If date_type='date': also requires specific_date
+  If date_type='range': also requires start_date, end_date
+
+• mark_completed - Mark ONE reminder as done
+  Required: reminder_id (single string like 'rem_a1b2c3d4')
+
+• update_reminder - Modify an existing reminder
+  Required: reminder_id
+  Optional: title, date, description, contact_name, additional_notes
+
+• delete_reminder - Delete ONE reminder
+  Required: reminder_id
+
+• batch - Perform action on MULTIPLE reminders at once
+  Required: batch_action (complete|delete), reminder_ids (array like ['rem_a1b2c3d4', 'rem_e5f6g7h8'])
+
+IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation with reminder_ids array for multiple.""",
         "input_schema": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["add_reminder", "get_reminders", "mark_completed", "update_reminder", "delete_reminder"],
-                        "description": "The operation to perform"
+                        "enum": ["add_reminder", "get_reminders", "mark_completed", "update_reminder", "delete_reminder", "snooze_reminder", "batch"],
+                        "description": "The operation to perform. MUST be exactly one of: add_reminder, get_reminders, mark_completed, update_reminder, delete_reminder, snooze_reminder, batch. Do NOT abbreviate (e.g., use 'update_reminder' not 'update')."
                     },
                     "title": {
                         "type": "string",
@@ -86,7 +112,12 @@ class ReminderTool(Tool):
                     },
                     "reminder_id": {
                         "type": "string",
-                        "description": "ID of the reminder to mark completed, update, or delete (required for mark_completed, update_reminder, delete_reminder)"
+                        "description": "ID of the reminder to mark completed, update, delete, or snooze (required for mark_completed, update_reminder, delete_reminder; optional for snooze_reminder if reminder_ids provided)"
+                    },
+                    "reminder_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of reminder IDs to snooze (for snooze_reminder operation - use this for bulk snoozing)"
                     },
                     "date_type": {
                         "type": "string",
@@ -104,6 +135,16 @@ class ReminderTool(Tool):
                     "end_date": {
                         "type": "string",
                         "description": "End date in ISO 8601 format (YYYY-MM-DDTHH:MM:SS) (required when date_type is 'range')"
+                    },
+                    "batch_action": {
+                        "type": "string",
+                        "enum": ["complete", "delete"],
+                        "description": "Action to perform on multiple reminders (required when operation='batch')"
+                    },
+                    "reminder_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of reminder IDs for batch operation (required when operation='batch')"
                     }
                 },
                 "required": ["operation"],
@@ -216,6 +257,10 @@ class ReminderTool(Tool):
         5. delete_reminder: Delete a reminder
            - Required: reminder_id
            - Returns: Dict with deletion confirmation
+
+        6. snooze_reminder: Snooze reminder(s) by 1 hour
+           - Required: reminder_id OR reminder_ids (at least one)
+           - Returns: Dict with snoozed reminder(s) and new times
         """
         try:
             # Ensure reminders table exists on first use
@@ -240,12 +285,16 @@ class ReminderTool(Tool):
                 return self._update_reminder(**kwargs)
             elif operation == "delete_reminder":
                 return self._delete_reminder(**kwargs)
+            elif operation == "snooze_reminder":
+                return self._snooze_reminder(**kwargs)
+            elif operation == "batch":
+                return self._batch(**kwargs)
             else:
                 self.logger.error(f"Unknown operation: {operation}")
                 raise ValueError(
                     f"Unknown operation: {operation}. Valid operations are: "
                     "add_reminder, get_reminders, mark_completed, "
-                    "update_reminder, delete_reminder"
+                    "update_reminder, delete_reminder, snooze_reminder, batch"
                 )
         except Exception as e:
             self.logger.error(f"Error executing {operation} in reminder_tool: {e}")
@@ -739,6 +788,136 @@ class ReminderTool(Tool):
         return {
             "id": reminder_id,
             "message": f"Reminder '{reminder['encrypted__title']}' deleted successfully"
+        }
+
+    def _snooze_reminder(
+        self,
+        reminder_id: Optional[str] = None,
+        reminder_ids: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Snooze one or more reminders by 1 hour.
+
+        Args:
+            reminder_id: Single reminder ID to snooze
+            reminder_ids: List of reminder IDs to snooze (for bulk operations)
+
+        Returns:
+            Dict containing the snoozed reminder(s) and new times
+
+        Raises:
+            ValueError: If no reminder IDs provided or reminders not found
+        """
+        # Normalize to list of IDs
+        ids_to_snooze: List[str] = []
+        if reminder_ids:
+            ids_to_snooze.extend(reminder_ids)
+        if reminder_id:
+            ids_to_snooze.append(reminder_id)
+
+        if not ids_to_snooze:
+            raise ValueError("Either reminder_id or reminder_ids must be provided for snooze_reminder")
+
+        # Remove duplicates while preserving order
+        ids_to_snooze = list(dict.fromkeys(ids_to_snooze))
+
+        snoozed = []
+        not_found = []
+
+        for rid in ids_to_snooze:
+            reminders = self.db.select('reminders', 'id = :id', {'id': rid})
+
+            if not reminders:
+                not_found.append(rid)
+                continue
+
+            reminder = reminders[0]
+
+            # Parse current reminder date and add 1 hour
+            current_date = parse_utc_time_string(reminder['reminder_date'])
+            new_date = current_date + timedelta(hours=1)
+
+            # Update the reminder
+            update_data = {
+                'reminder_date': format_utc_iso(new_date),
+                'updated_at': format_utc_iso(utc_now())
+            }
+
+            self.db.update(
+                'reminders',
+                update_data,
+                'id = :id',
+                {'id': rid}
+            )
+
+            # Get updated reminder for response
+            updated_reminders = self.db.select('reminders', 'id = :id', {'id': rid})
+            if updated_reminders:
+                snoozed.append(self._format_reminder_for_display(updated_reminders[0]))
+
+        # Build response
+        user_tz = get_user_preferences().timezone
+
+        result: Dict[str, Any] = {
+            "snoozed_count": len(snoozed),
+            "snoozed_reminders": snoozed
+        }
+
+        if len(snoozed) == 1:
+            new_time = convert_from_utc(parse_utc_time_string(snoozed[0]['reminder_date']), user_tz)
+            result["message"] = f"Reminder snoozed for 1 hour (new time: {format_datetime(new_time, 'date_time', include_timezone=True)})"
+        elif snoozed:
+            result["message"] = f"Snoozed {len(snoozed)} reminder(s) for 1 hour"
+        else:
+            result["message"] = "No reminders were snoozed"
+
+        if not_found:
+            result["not_found"] = not_found
+            result["message"] += f". {len(not_found)} reminder(s) not found: {', '.join(not_found)}"
+
+        return result
+
+    def _batch(self, batch_action: str, reminder_ids: List[str]) -> Dict[str, Any]:
+        """
+        Perform batch action on multiple reminders.
+
+        Args:
+            batch_action: Action to perform - 'complete' or 'delete'
+            reminder_ids: List of reminder IDs to process
+
+        Returns:
+            Dict with succeeded/not_found/failed lists and summary message
+        """
+        if batch_action not in ("complete", "delete"):
+            raise ValueError(f"batch_action must be 'complete' or 'delete', got '{batch_action}'")
+
+        if not reminder_ids:
+            raise ValueError("reminder_ids array cannot be empty")
+
+        results: Dict[str, List] = {"succeeded": [], "not_found": [], "failed": []}
+        action_method = self._mark_completed if batch_action == "complete" else self._delete_reminder
+
+        for rid in reminder_ids:
+            try:
+                result = action_method(rid)
+                if result.get("success") is False:
+                    results["not_found"].append(rid)
+                else:
+                    results["succeeded"].append(rid)
+            except Exception as e:
+                results["failed"].append({"id": rid, "error": str(e)})
+
+        total = len(reminder_ids)
+        succeeded = len(results["succeeded"])
+        verb = "Completed" if batch_action == "complete" else "Deleted"
+
+        return {
+            "success": succeeded == total,
+            "batch_action": batch_action,
+            "succeeded": results["succeeded"],
+            "not_found": results["not_found"],
+            "failed": results["failed"],
+            "message": f"{verb} {succeeded} of {total} reminders"
         }
 
     def _format_reminder_for_display(self, reminder: Dict[str, Any]) -> Dict[str, Any]:

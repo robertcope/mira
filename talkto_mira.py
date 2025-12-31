@@ -80,13 +80,13 @@ def call_action(token: str, domain: str, action: str, data: dict = None) -> dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Tier definitions:
-# - fast: Qwen3 32B via Groq
-# - balanced: Kimi K2 via Groq
+# - fast: Haiku with quick thinking (1024 tokens)
+# - balanced: Sonnet with light reasoning (1024 tokens)
 # - nuanced: Opus with nuanced reasoning (8192 tokens)
 TIER_OPTIONS = ["fast", "balanced", "nuanced"]
 TIER_DESCRIPTIONS = {
-    "fast": "Qwen3 • Fast",
-    "balanced": "Kimi K2 • Balanced",
+    "fast": "Haiku • Fast",
+    "balanced": "Sonnet • Balanced",
     "nuanced": "Opus • Nuanced"
 }
 

@@ -29,10 +29,11 @@ from utils.scheduler_service import scheduler_service
 from utils.scheduled_tasks import initialize_all_scheduled_tasks
 from utils.colored_logging import setup_colored_root_logging
 
-setup_colored_root_logging(log_level=logging.INFO, fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+setup_colored_root_logging(log_level=logging.WARNING, fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Suppress APScheduler debug noise - only show warnings and above
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
+# Set APScheduler loggers to DEBUG to suppress routine job execution logs
+logging.getLogger('apscheduler.executors.default').setLevel(logging.DEBUG)
+logging.getLogger('apscheduler.scheduler').setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
@@ -502,15 +503,6 @@ def create_app() -> FastAPI:
     app.include_router(data.router, prefix="/v0/api", tags=["data"])
     app.include_router(actions.router, prefix="/v0/api", tags=["actions"])
     app.include_router(tool_config.router, prefix="/v0/api", tags=["tool_config"])
-
-    # Root endpoint - friendly message for self-hosters
-    @app.get("/")
-    async def root():
-        """Guide users to the correct endpoints."""
-        return {
-            "message": "MIRA is running! To interact with MIRA, use /v0/api/chat or the CLI tool. To check system health, query /v0/api/health"
-        }
-
     app.include_router(federation_api.router, prefix="/v0/api", tags=["federation"])
 
     
