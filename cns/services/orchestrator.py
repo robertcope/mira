@@ -87,12 +87,6 @@ class ContinuumOrchestrator:
         # One-shot context trim from async LLM judgment (future extension)
         self._pending_context_trim: Dict[str, int] = {}  # {continuum_id: trim_index}
 
-        # In-memory token tracking for context overflow detection
-        # Tracks actual input tokens from previous turn for accurate estimation
-        self._last_turn_usage: Dict[str, int] = {}  # {continuum_id: input_tokens}
-        # One-shot context trim from async LLM judgment (future extension)
-        self._pending_context_trim: Dict[str, int] = {}  # {continuum_id: trim_index}
-
         # Subscribe to system prompt composed event
         self.event_bus.subscribe('SystemPromptComposedEvent', self._handle_system_prompt_composed)
 
@@ -300,15 +294,6 @@ class ContinuumOrchestrator:
         else:
             # No notification center or no messages - use original structure
             complete_messages = [{"role": "system", "content": system_blocks}] + messages
-
-        # Initialize messages for LLM (may be modified by overflow remediation)
-        messages_for_llm = complete_messages
-
-        # Check for one-shot adjustment from previous async LLM judgment
-        one_shot_trim = self._pending_context_trim.pop(str(continuum.id), None)
-        if one_shot_trim:
-            logger.info(f"Applying one-shot trim from async LLM judgment: {one_shot_trim} messages")
-            messages_for_llm = messages_for_llm[:1] + messages_for_llm[one_shot_trim + 1:]
 
         # Initialize messages for LLM (may be modified by overflow remediation)
         messages_for_llm = complete_messages
