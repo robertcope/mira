@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from auth.api import get_current_user
 from clients.files_manager import FilesManager
-from utils.distributed_lock import UserRequestLock
+from utils.distributed_lock import UserRequestQueue
 from utils.document_processing import process_document, ProcessedDocument, SUPPORTED_DOCUMENT_FORMATS, MAX_DOCUMENT_SIZE_MB
 from utils.image_compression import compress_image, CompressedImage
 from utils.text_sanitizer import sanitize_message_content
@@ -34,9 +34,15 @@ router = APIRouter()
 SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE_MB = 20
 
-# Distributed per-user request lock (coordinates across workers)
-# TTL set to 180s to accommodate long-running operations (web searches, complex tool usage)
-_user_request_lock = UserRequestLock(ttl=180)
+# Per-user request queue (waits instead of rejecting concurrent requests)
+# processing_ttl=180s: accommodates long-running operations
+# queue_timeout=300s: requests expire after 5min waiting
+# max_queue_depth=5: prevent abuse
+_user_request_queue = UserRequestQueue(
+    processing_ttl=180,
+    queue_timeout=300,
+    max_queue_depth=5
+)
 
 
 class ChatRequest(BaseModel):
@@ -118,174 +124,166 @@ class ChatEndpoint(BaseHandler):
             except Exception as e:
                 raise ValidationError(f"Invalid base64 document: {str(e)}")
 
-        # Concurrency control: one active request per user
-        if not _user_request_lock.acquire(user_id):
-            # Get TTL of existing lock to show how long user should wait
-            ttl = _user_request_lock.lock.get_ttl(user_id)
-            if ttl > 0:
-                elapsed = 180 - ttl  # Calculate how long the lock has been held
-                raise ValidationError(
-                    f"Another request is already in progress (started {elapsed}s ago, may take up to {ttl}s more)"
-                )
-            else:
-                # Lock expired or doesn't exist (race condition)
-                raise ValidationError("Another chat request is already in progress for this user")
+        # Wait for processing lock (blocks until available instead of rejecting)
+        logger.info(f"[Chat API] Waiting for processing lock for user {user_id[:8]}")
 
         files_manager: Optional[FilesManager] = None
         try:
-            # Resolve dependencies
-            orchestrator = get_orchestrator()
-            continuum_pool = get_continuum_pool()
+            # Use context manager to wait for and acquire processing lock
+            # This blocks until lock is available, ensuring serial processing
+            with _user_request_queue.process_request(user_id):
+                # Resolve dependencies
+                orchestrator = get_orchestrator()
+                continuum_pool = get_continuum_pool()
 
-            # Get the user's continuum
-            continuum = continuum_pool.get_or_create()
+                # Get the user's continuum
+                continuum = continuum_pool.get_or_create()
 
-            # Increment segment turn counter at API boundary (before any internal processing)
-            # This ensures only real user messages increment the counter, not synthetic messages
-            segment_turn_number = continuum_pool.repository.increment_segment_turn(
-                continuum.id, user_id
-            )
+                # Increment segment turn counter at API boundary (before any internal processing)
+                # This ensures only real user messages increment the counter, not synthetic messages
+                segment_turn_number = continuum_pool.repository.increment_segment_turn(
+                    continuum.id, user_id
+                )
 
-            # Get segment ID for file lifecycle tracking
-            active_sentinel = continuum_pool.repository.find_active_segment(continuum.id, user_id)
-            if not active_sentinel:
-                raise ValidationError("No active segment found")
-            segment_id = active_sentinel.metadata.get('segment_id')
-            if not segment_id:
-                raise ValidationError("Active segment missing segment_id")
+                # Get segment ID for file lifecycle tracking
+                active_sentinel = continuum_pool.repository.find_active_segment(continuum.id, user_id)
+                if not active_sentinel:
+                    raise ValidationError("No active segment found")
+                segment_id = active_sentinel.metadata.get('segment_id')
+                if not segment_id:
+                    raise ValidationError("Active segment missing segment_id")
 
-            # Process document with Files API support
-            processed_doc: Optional[ProcessedDocument] = None
-            if document_bytes:
-                # Initialize FilesManager with Anthropic client
-                files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
+                # Process document with Files API support
+                processed_doc: Optional[ProcessedDocument] = None
+                if document_bytes:
+                    # Initialize FilesManager with Anthropic client
+                    files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
 
-                try:
-                    processed_doc = process_document(
-                        document_bytes,
-                        document_type,
-                        files_manager=files_manager,
-                        filename=f"document.{document_type.split('/')[-1]}",  # Extract extension from MIME
-                        segment_id=segment_id
-                    )
-                except ValueError as e:
-                    raise ValidationError(f"Document processing failed: {e}")
-                except Exception as e:
-                    raise ValidationError(f"Document upload failed: {e}")
+                    try:
+                        processed_doc = process_document(
+                            document_bytes,
+                            document_type,
+                            files_manager=files_manager,
+                            filename=f"document.{document_type.split('/')[-1]}",  # Extract extension from MIME
+                            segment_id=segment_id
+                        )
+                    except ValueError as e:
+                        raise ValidationError(f"Document processing failed: {e}")
+                    except Exception as e:
+                        raise ValidationError(f"Document upload failed: {e}")
 
-            # Build content arrays (inference tier for LLM, storage tier for persistence)
-            inference_content: Union[str, List[Dict[str, Any]]]
-            storage_content: Optional[Union[str, List[Dict[str, Any]]]] = None
+                # Build content arrays (inference tier for LLM, storage tier for persistence)
+                inference_content: Union[str, List[Dict[str, Any]]]
+                storage_content: Optional[Union[str, List[Dict[str, Any]]]] = None
 
-            if compressed:
-                # Image: Inference tier (1200px) for current LLM call
-                inference_content = [
-                    {"type": "text", "text": msg},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed.inference_media_type,
-                            "data": compressed.inference_base64,
+                if compressed:
+                    # Image: Inference tier (1200px) for current LLM call
+                    inference_content = [
+                        {"type": "text", "text": msg},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": compressed.inference_media_type,
+                                "data": compressed.inference_base64,
+                            }
                         }
-                    }
-                ]
-                # Storage tier (512px WebP) for persistence and multi-turn context
-                storage_content = [
-                    {"type": "text", "text": msg},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed.storage_media_type,
-                            "data": compressed.storage_base64,
+                    ]
+                    # Storage tier (512px WebP) for persistence and multi-turn context
+                    storage_content = [
+                        {"type": "text", "text": msg},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": compressed.storage_media_type,
+                                "data": compressed.storage_base64,
+                            }
                         }
-                    }
-                ]
-            elif processed_doc:
-                # Document handling based on content_type
-                if processed_doc.content_type == "container_upload":
-                    # Structured data: Files API with file_id (CSV, XLSX, JSON for code execution)
-                    doc_block: Dict[str, Any] = {
-                        "type": "container_upload",
-                        "file_id": processed_doc.data  # file_id from Files API (no source wrapper!)
-                    }
-                elif processed_doc.content_type == "document":
-                    # PDF: Base64 document block
-                    doc_block = {
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": processed_doc.media_type,
-                            "data": processed_doc.data,
+                    ]
+                elif processed_doc:
+                    # Document handling based on content_type
+                    if processed_doc.content_type == "container_upload":
+                        # Structured data: Files API with file_id (CSV, XLSX, JSON for code execution)
+                        doc_block: Dict[str, Any] = {
+                            "type": "container_upload",
+                            "file_id": processed_doc.data  # file_id from Files API (no source wrapper!)
                         }
-                    }
+                    elif processed_doc.content_type == "document":
+                        # PDF: Base64 document block
+                        doc_block = {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": processed_doc.media_type,
+                                "data": processed_doc.data,
+                            }
+                        }
+                    else:
+                        # DOCX/plain text: Extracted text
+                        doc_block = {
+                            "type": "text",
+                            "text": f"[Document: {processed_doc.media_type}]\n{processed_doc.data}",
+                        }
+
+                    inference_content = [{"type": "text", "text": msg}, doc_block]
+                    # Storage: Use same block as inference (file_id persists until segment collapse)
+                    storage_content = [
+                        {"type": "text", "text": msg},
+                        doc_block  # Reuse same block (file_id or base64)
+                    ]
                 else:
-                    # DOCX/plain text: Extracted text
-                    doc_block = {
-                        "type": "text",
-                        "text": f"[Document: {processed_doc.media_type}]\n{processed_doc.data}",
-                    }
+                    inference_content = msg
 
-                inference_content = [{"type": "text", "text": msg}, doc_block]
-                # Storage: Use same block as inference (file_id persists until segment collapse)
-                storage_content = [
-                    {"type": "text", "text": msg},
-                    doc_block  # Reuse same block (file_id or base64)
-                ]
-            else:
-                inference_content = msg
+                # Create a Unit of Work and process via orchestrator
+                uow = continuum_pool.begin_work(continuum)
 
-            # Create a Unit of Work and process via orchestrator
-            uow = continuum_pool.begin_work(continuum)
+                from config.config_manager import config as app_config
+                continuum, response_text, metadata = orchestrator.process_message(
+                    continuum,
+                    inference_content,
+                    app_config.system_prompt,
+                    stream=True,           # orchestrator currently streams internally
+                    stream_callback=None,   # no external streaming for HTTP endpoint
+                    unit_of_work=uow,
+                    storage_content=storage_content,  # 512px WebP for persistence
+                    segment_turn_number=segment_turn_number,  # Turn count within segment
+                )
 
-            from config.config_manager import config as app_config
-            continuum, response_text, metadata = orchestrator.process_message(
-                continuum,
-                inference_content,
-                app_config.system_prompt,
-                stream=True,           # orchestrator currently streams internally
-                stream_callback=None,   # no external streaming for HTTP endpoint
-                unit_of_work=uow,
-                storage_content=storage_content,  # 512px WebP for persistence
-                segment_turn_number=segment_turn_number,  # Turn count within segment
-            )
+                # Commit batched changes
+                uow.commit()
 
-            # Commit batched changes
-            uow.commit()
+                processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
-            processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
+                # Log processing time for monitoring long-running requests
+                tools_used = metadata.get("tools_used", [])
+                logger.info(
+                    f"[Chat API] Request completed in {processing_time_ms}ms "
+                    f"(user={user_id[:8]}..., tools={len(tools_used)})"
+                )
 
-            # Log processing time for monitoring long-running requests
-            tools_used = metadata.get("tools_used", [])
-            logger.info(
-                f"[Chat API] Request completed in {processing_time_ms}ms "
-                f"(user={user_id[:8]}..., tools={len(tools_used)})"
-            )
+                # Build response
+                data: Dict[str, Any] = {
+                    "continuum_id": str(continuum.id),
+                    "response": response_text,
+                    "metadata": {
+                        "tools_used": metadata.get("tools_used", []),
+                        "referenced_memories": metadata.get("referenced_memories", []),
+                        "surfaced_memories": metadata.get("surfaced_memories", []),
+                        "processing_time_ms": processing_time_ms,
+                    },
+                }
 
-            # Build response
-            data: Dict[str, Any] = {
-                "continuum_id": str(continuum.id),
-                "response": response_text,
-                "metadata": {
-                    "tools_used": metadata.get("tools_used", []),
-                    "referenced_memories": metadata.get("referenced_memories", []),
-                    "surfaced_memories": metadata.get("surfaced_memories", []),
-                    "processing_time_ms": processing_time_ms,
-                },
-            }
-
-            return create_success_response(
-                data=data,
-                meta={
-                    "timestamp": format_utc_iso(utc_now()),
-                },
-            )
+                return create_success_response(
+                    data=data,
+                    meta={
+                        "timestamp": format_utc_iso(utc_now()),
+                    },
+                )
 
         finally:
-            # Note: File cleanup happens on segment collapse, not per-request
-            _user_request_lock.release(user_id)
-            logger.debug(f"[Chat API] Released lock for user {user_id[:8]}...")
+            # Context manager handles lock release
+            pass
 
 
 @router.post("/chat")

@@ -27,7 +27,7 @@ from utils.google_chat_jwt_verifier import (
     GoogleChatJWTVerificationError,
 )
 from clients.files_manager import FilesManager
-from utils.distributed_lock import UserRequestLock
+from utils.distributed_lock import UserRequestQueue
 from utils.document_processing import process_document, ProcessedDocument, SUPPORTED_DOCUMENT_FORMATS
 from utils.image_compression import compress_image, CompressedImage
 from utils.text_sanitizer import sanitize_message_content
@@ -51,9 +51,15 @@ router = APIRouter()
 SUPPORTED_IMAGE_FORMATS = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE_MB = 20
 
-# Distributed per-user request lock
-# TTL set to 180s to accommodate long-running operations (web searches, complex tool usage)
-_user_request_lock = UserRequestLock(ttl=180)
+# Per-user request queue
+# processing_ttl=180s: accommodates long-running operations (web searches, complex tool usage)
+# queue_timeout=300s: requests expire after 5min in queue
+# max_queue_depth=5: prevent abuse
+_user_request_queue = UserRequestQueue(
+    processing_ttl=180,
+    queue_timeout=300,
+    max_queue_depth=5
+)
 
 
 class GoogleChatEvent(BaseModel):
@@ -226,176 +232,170 @@ class GoogleChatHandler(BaseHandler):
                     logger.error(f"[Google Chat] Error downloading attachment: {e}", exc_info=True)
                     raise ValidationError(f"Failed to download attachment: {e}")
 
-        # Acquire user lock (one request at a time per user)
-        if not _user_request_lock.acquire(user_id):
-            # Get TTL of existing lock to show how long user should wait
-            ttl = _user_request_lock.lock.get_ttl(user_id)
-            if ttl > 0:
-                elapsed = 180 - ttl  # Calculate how long the lock has been held
-                raise ValidationError(
-                    f"Another request is already in progress (started {elapsed}s ago, may take up to {ttl}s more)"
-                )
-            else:
-                # Lock expired or doesn't exist (race condition)
-                raise ValidationError("Another request is already in progress")
+        # Wait for processing lock (blocks until available instead of rejecting)
+        # This ensures requests process serially without rejection errors
+        logger.info(f"[Google Chat] Waiting for processing lock for user {user_id[:8]}")
 
         files_manager: Optional[FilesManager] = None
         try:
-            # Resolve dependencies
-            orchestrator = get_orchestrator()
-            continuum_pool = get_continuum_pool()
+            # Use context manager to automatically acquire/release processing lock
+            # This blocks until lock is available, ensuring serial processing
+            with _user_request_queue.process_request(user_id):
+                # Resolve dependencies
+                orchestrator = get_orchestrator()
+                continuum_pool = get_continuum_pool()
 
-            # Get user's continuum
-            continuum = continuum_pool.get_or_create()
+                # Get user's continuum
+                continuum = continuum_pool.get_or_create()
 
-            # Increment segment turn counter
-            segment_turn_number = continuum_pool.repository.increment_segment_turn(
-                continuum.id, user_id
-            )
+                # Increment segment turn counter
+                segment_turn_number = continuum_pool.repository.increment_segment_turn(
+                    continuum.id, user_id
+                )
 
-            # Get segment ID for file lifecycle
-            active_sentinel = continuum_pool.repository.find_active_segment(continuum.id, user_id)
-            if not active_sentinel:
-                raise ValidationError("No active segment found")
-            segment_id = active_sentinel.metadata.get('segment_id')
-            if not segment_id:
-                raise ValidationError("Active segment missing segment_id")
+                # Get segment ID for file lifecycle
+                active_sentinel = continuum_pool.repository.find_active_segment(continuum.id, user_id)
+                if not active_sentinel:
+                    raise ValidationError("No active segment found")
+                segment_id = active_sentinel.metadata.get('segment_id')
+                if not segment_id:
+                    raise ValidationError("Active segment missing segment_id")
 
-            # Process document attachment if present
-            if attachments and not compressed_image:
-                attachment = attachments[0]
-                attachment_type = attachment.get("contentType", "")
-                attachment_data_ref = attachment.get("attachmentDataRef", {})
-                resource_name = attachment_data_ref.get("resourceName")
+                # Process document attachment if present
+                if attachments and not compressed_image:
+                    attachment = attachments[0]
+                    attachment_type = attachment.get("contentType", "")
+                    attachment_data_ref = attachment.get("attachmentDataRef", {})
+                    resource_name = attachment_data_ref.get("resourceName")
 
-                if resource_name and attachment_type in SUPPORTED_DOCUMENT_FORMATS:
-                    files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
+                    if resource_name and attachment_type in SUPPORTED_DOCUMENT_FORMATS:
+                        files_manager = FilesManager(orchestrator.llm_provider.anthropic_client)
 
-                    # Download attachment using Google Chat API
-                    try:
-                        from utils.google_chat_client import get_google_chat_client
-
-                        chat_client = get_google_chat_client()
-                        if not chat_client._service:
-                            raise RuntimeError("Google Chat API service not initialized")
-
-                        request = chat_client._service.media().download_media(
-                            resourceName=resource_name
-                        )
-                        document_bytes = request.execute()
-
-                        filename = attachment.get("contentName", f"document.{attachment_type.split('/')[-1]}")
-
+                        # Download attachment using Google Chat API
                         try:
-                            processed_doc = process_document(
-                                document_bytes,
-                                attachment_type,
-                                files_manager=files_manager,
-                                filename=filename,
-                                segment_id=segment_id
+                            from utils.google_chat_client import get_google_chat_client
+
+                            chat_client = get_google_chat_client()
+                            if not chat_client._service:
+                                raise RuntimeError("Google Chat API service not initialized")
+
+                            request = chat_client._service.media().download_media(
+                                resourceName=resource_name
                             )
-                        except ValueError as e:
-                            raise ValidationError(f"Document processing failed: {e}")
+                            document_bytes = request.execute()
 
-                    except Exception as e:
-                        logger.error(f"[Google Chat] Error downloading document: {e}", exc_info=True)
-                        raise ValidationError(f"Failed to download document: {e}")
+                            filename = attachment.get("contentName", f"document.{attachment_type.split('/')[-1]}")
 
-            # Build content arrays (same pattern as chat.py)
-            inference_content: Union[str, List[Dict[str, Any]]]
-            storage_content: Optional[Union[str, List[Dict[str, Any]]]] = None
+                            try:
+                                processed_doc = process_document(
+                                    document_bytes,
+                                    attachment_type,
+                                    files_manager=files_manager,
+                                    filename=filename,
+                                    segment_id=segment_id
+                                )
+                            except ValueError as e:
+                                raise ValidationError(f"Document processing failed: {e}")
 
-            if compressed_image:
-                # Image: inference tier (1200px) + storage tier (512px WebP)
-                inference_content = [
-                    {"type": "text", "text": msg},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed_image.inference_media_type,
-                            "data": compressed_image.inference_base64,
+                        except Exception as e:
+                            logger.error(f"[Google Chat] Error downloading document: {e}", exc_info=True)
+                            raise ValidationError(f"Failed to download document: {e}")
+
+                # Build content arrays (same pattern as chat.py)
+                inference_content: Union[str, List[Dict[str, Any]]]
+                storage_content: Optional[Union[str, List[Dict[str, Any]]]] = None
+
+                if compressed_image:
+                    # Image: inference tier (1200px) + storage tier (512px WebP)
+                    inference_content = [
+                        {"type": "text", "text": msg},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": compressed_image.inference_media_type,
+                                "data": compressed_image.inference_base64,
+                            }
                         }
-                    }
-                ]
-                storage_content = [
-                    {"type": "text", "text": msg},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": compressed_image.storage_media_type,
-                            "data": compressed_image.storage_base64,
+                    ]
+                    storage_content = [
+                        {"type": "text", "text": msg},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": compressed_image.storage_media_type,
+                                "data": compressed_image.storage_base64,
+                            }
                         }
-                    }
-                ]
-            elif processed_doc:
-                # Document handling based on content_type
-                if processed_doc.content_type == "container_upload":
-                    doc_block: Dict[str, Any] = {
-                        "type": "container_upload",
-                        "file_id": processed_doc.data
-                    }
-                elif processed_doc.content_type == "document":
-                    doc_block = {
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": processed_doc.media_type,
-                            "data": processed_doc.data,
+                    ]
+                elif processed_doc:
+                    # Document handling based on content_type
+                    if processed_doc.content_type == "container_upload":
+                        doc_block: Dict[str, Any] = {
+                            "type": "container_upload",
+                            "file_id": processed_doc.data
                         }
-                    }
+                    elif processed_doc.content_type == "document":
+                        doc_block = {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": processed_doc.media_type,
+                                "data": processed_doc.data,
+                            }
+                        }
+                    else:
+                        doc_block = {
+                            "type": "text",
+                            "text": f"[Document: {processed_doc.media_type}]\n{processed_doc.data}",
+                        }
+
+                    inference_content = [{"type": "text", "text": msg}, doc_block]
+                    storage_content = [{"type": "text", "text": msg}, doc_block]
                 else:
-                    doc_block = {
-                        "type": "text",
-                        "text": f"[Document: {processed_doc.media_type}]\n{processed_doc.data}",
-                    }
+                    inference_content = msg
 
-                inference_content = [{"type": "text", "text": msg}, doc_block]
-                storage_content = [{"type": "text", "text": msg}, doc_block]
-            else:
-                inference_content = msg
+                # Process via orchestrator
+                uow = continuum_pool.begin_work(continuum)
 
-            # Process via orchestrator
-            uow = continuum_pool.begin_work(continuum)
+                from config.config_manager import config as app_config
+                continuum, response_text, metadata = orchestrator.process_message(
+                    continuum,
+                    inference_content,
+                    app_config.system_prompt,
+                    stream=True,
+                    stream_callback=None,
+                    unit_of_work=uow,
+                    storage_content=storage_content,
+                    segment_turn_number=segment_turn_number,
+                )
 
-            from config.config_manager import config as app_config
-            continuum, response_text, metadata = orchestrator.process_message(
-                continuum,
-                inference_content,
-                app_config.system_prompt,
-                stream=True,
-                stream_callback=None,
-                unit_of_work=uow,
-                storage_content=storage_content,
-                segment_turn_number=segment_turn_number,
-            )
+                # Commit changes
+                uow.commit()
 
-            # Commit changes
-            uow.commit()
+                processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
-            processing_time_ms = int((utc_now() - start_time).total_seconds() * 1000)
+                # Add processing time to metadata
+                metadata["processing_time_ms"] = processing_time_ms
 
-            # Add processing time to metadata
-            metadata["processing_time_ms"] = processing_time_ms
+                # Log processing time for monitoring long-running requests
+                tools_used = metadata.get("tools_used", [])
+                logger.info(
+                    f"[Google Chat] Request completed in {processing_time_ms}ms "
+                    f"(user={user_id[:8]}..., tools={len(tools_used)})"
+                )
 
-            # Log processing time for monitoring long-running requests
-            tools_used = metadata.get("tools_used", [])
-            logger.info(
-                f"[Google Chat] Request completed in {processing_time_ms}ms "
-                f"(user={user_id[:8]}..., tools={len(tools_used)})"
-            )
-
-            # Format response as Google Chat Card
-            return format_response_as_card(
-                response_text,
-                metadata=metadata,
-                include_metadata=False  # Set to True to show tools/timing footer
-            )
+                # Format response as Google Chat Card
+                return format_response_as_card(
+                    response_text,
+                    metadata=metadata,
+                    include_metadata=False  # Set to True to show tools/timing footer
+                )
 
         finally:
-            _user_request_lock.release(user_id)
-            logger.debug(f"[Google Chat] Released lock for user {user_id[:8]}...")
+            # Context manager handles lock release, but clean up files if needed
+            pass
 
 
 @router.post("/google-chat")

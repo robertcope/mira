@@ -3,14 +3,19 @@ Distributed lock implementation using Valkey for multi-process concurrency contr
 
 Provides atomic distributed locks that work across multiple worker processes,
 replacing in-memory locks that only work within a single process.
+
+Also provides UserRequestQueue for queuing requests instead of rejecting them.
 """
 
 import logging
 import uuid
-from typing import Optional
+import json
+import time
+from typing import Optional, Dict, Any
 from contextlib import contextmanager
 
 from clients.valkey_client import get_valkey
+from utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -275,3 +280,269 @@ class UserRequestLock:
         """
         with self.lock.lock(user_id):
             yield
+
+
+class UserRequestQueue:
+    """
+    Per-user request queue with Valkey-backed FIFO storage.
+
+    Queues incoming requests instead of rejecting them, ensuring serial
+    processing while accepting concurrent submissions. Each user gets their
+    own queue.
+
+    Architecture:
+    - Valkey LIST for FIFO queue: LPUSH to enqueue, BRPOP to dequeue
+    - Processing lock ensures only one request processes at a time
+    - Request timeout prevents infinite waits
+    - Queue depth limit prevents abuse
+    """
+
+    def __init__(
+        self,
+        processing_ttl: int = 180,
+        queue_timeout: int = 300,
+        max_queue_depth: int = 5
+    ):
+        """
+        Initialize user request queue.
+
+        Args:
+            processing_ttl: TTL for processing lock (max time to process one request)
+            queue_timeout: Max seconds a request can wait in queue before expiring
+            max_queue_depth: Max requests allowed in queue per user
+        """
+        self.valkey = get_valkey()
+        self.processing_lock = DistributedLock(
+            lock_prefix="user_processing:",
+            default_ttl=processing_ttl
+        )
+        self.processing_ttl = processing_ttl
+        self.queue_timeout = queue_timeout
+        self.max_queue_depth = max_queue_depth
+        self.logger = logging.getLogger("user_request_queue")
+
+    def _get_queue_key(self, user_id: str) -> str:
+        """Get Valkey key for user's request queue."""
+        return f"user_queue:{user_id}"
+
+    def enqueue(self, user_id: str, request_data: Dict[str, Any]) -> str:
+        """
+        Add request to user's queue.
+
+        Args:
+            user_id: User identifier
+            request_data: Request payload to queue
+
+        Returns:
+            request_id for tracking
+
+        Raises:
+            ValueError: If queue is full
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        queue_key = self._get_queue_key(user_id)
+
+        # Check queue depth
+        current_depth = self.valkey.llen(queue_key)
+        if current_depth >= self.max_queue_depth:
+            raise ValueError(
+                f"Queue full: user has {current_depth} pending requests "
+                f"(max {self.max_queue_depth})"
+            )
+
+        # Create queue entry with metadata
+        request_id = str(uuid.uuid4())
+        queue_entry = {
+            "request_id": request_id,
+            "user_id": user_id,
+            "enqueued_at": utc_now().isoformat(),
+            "data": request_data
+        }
+
+        # Push to queue (LPUSH = add to head, RPOP = remove from tail = FIFO)
+        self.valkey.lpush(queue_key, json.dumps(queue_entry))
+
+        # Set queue expiration to prevent orphaned queues
+        self.valkey.expire(queue_key, self.queue_timeout)
+
+        self.logger.info(
+            f"Enqueued request {request_id[:8]} for user {user_id[:8]} "
+            f"(queue depth: {current_depth + 1})"
+        )
+
+        return request_id
+
+    def dequeue_blocking(self, user_id: str, timeout: int = 0) -> Optional[Dict[str, Any]]:
+        """
+        Block until next request available in queue, then dequeue it.
+
+        Uses BRPOP for blocking pop - waits until request available or timeout.
+
+        Args:
+            user_id: User identifier
+            timeout: Max seconds to wait (0 = wait indefinitely)
+
+        Returns:
+            Request entry dict with request_id, user_id, enqueued_at, data
+            None if timeout or queue empty
+
+        Raises:
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        queue_key = self._get_queue_key(user_id)
+
+        # BRPOP: Block until element available, then pop from tail (FIFO)
+        # Returns tuple: (key, value) or None if timeout
+        result = self.valkey.brpop(queue_key, timeout=timeout)
+
+        if not result:
+            return None
+
+        # result is tuple: (key, value)
+        _, queue_entry_json = result
+        queue_entry = json.loads(queue_entry_json)
+
+        # Check if request expired while in queue
+        enqueued_at = queue_entry["enqueued_at"]
+        enqueued_time = time.mktime(time.strptime(enqueued_at, "%Y-%m-%dT%H:%M:%S.%f"))
+        elapsed = time.time() - enqueued_time
+
+        if elapsed > self.queue_timeout:
+            self.logger.warning(
+                f"Request {queue_entry['request_id'][:8]} expired in queue "
+                f"(waited {elapsed:.1f}s, max {self.queue_timeout}s)"
+            )
+            return None
+
+        self.logger.info(
+            f"Dequeued request {queue_entry['request_id'][:8]} for user {user_id[:8]} "
+            f"(waited {elapsed:.1f}s)"
+        )
+
+        return queue_entry
+
+    def get_queue_depth(self, user_id: str) -> int:
+        """
+        Get current queue depth for user.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Number of requests in queue
+
+        Raises:
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        queue_key = self._get_queue_key(user_id)
+        return self.valkey.llen(queue_key)
+
+    def clear_queue(self, user_id: str) -> int:
+        """
+        Clear all queued requests for user.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Number of requests removed
+
+        Raises:
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        queue_key = self._get_queue_key(user_id)
+        depth = self.valkey.llen(queue_key)
+        self.valkey.delete(queue_key)
+
+        if depth > 0:
+            self.logger.warning(f"Cleared {depth} queued requests for user {user_id[:8]}")
+
+        return depth
+
+    def acquire_processing_lock(self, user_id: str) -> bool:
+        """
+        Acquire lock for processing user's request.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            True if lock acquired, False if user has concurrent processing
+
+        Raises:
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        return self.processing_lock.acquire(user_id, ttl=self.processing_ttl)
+
+    def release_processing_lock(self, user_id: str) -> bool:
+        """
+        Release processing lock for user.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            True if lock was released
+
+        Raises:
+            Exception: If Valkey is unavailable (infrastructure failure)
+        """
+        return self.processing_lock.release(user_id)
+
+    @contextmanager
+    def process_request(self, user_id: str, poll_interval: float = 1.0, max_wait: int = 300):
+        """
+        Context manager for processing a request with automatic lock management.
+
+        Waits (with polling) until processing lock is available, then acquires it.
+        This ensures requests are processed serially without rejection.
+
+        Args:
+            user_id: User identifier
+            poll_interval: Seconds to wait between lock acquisition attempts
+            max_wait: Maximum seconds to wait for lock (raises after timeout)
+
+        Raises:
+            LockAcquisitionError: If processing lock can't be acquired within max_wait
+
+        Yields:
+            None if lock acquired successfully
+        """
+        import time
+
+        start_time = time.time()
+        acquired = False
+
+        try:
+            # Poll until lock is available
+            while True:
+                acquired = self.processing_lock.acquire(user_id, ttl=self.processing_ttl)
+                if acquired:
+                    self.logger.info(f"Acquired processing lock for user {user_id[:8]}")
+                    break
+
+                # Check if we've exceeded max wait time
+                elapsed = time.time() - start_time
+                if elapsed >= max_wait:
+                    raise LockAcquisitionError(
+                        f"Could not acquire processing lock for {user_id} "
+                        f"after {elapsed:.1f}s (max: {max_wait}s)"
+                    )
+
+                # Log wait status
+                if int(elapsed) % 10 == 0 and elapsed > 0:  # Log every 10 seconds
+                    ttl = self.processing_lock.get_ttl(user_id)
+                    self.logger.info(
+                        f"Waiting for processing lock for user {user_id[:8]} "
+                        f"(waited {elapsed:.1f}s, lock TTL: {ttl}s)"
+                    )
+
+                # Wait before retry
+                time.sleep(poll_interval)
+
+            yield
+
+        finally:
+            if acquired:
+                self.processing_lock.release(user_id)
+                self.logger.debug(f"Released processing lock for user {user_id[:8]}")
