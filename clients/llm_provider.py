@@ -190,6 +190,15 @@ class GenericProviderClient:
             json=payload,
             timeout=self.timeout
         )
+
+        if not response.ok:
+            # Log the actual error response from the API before raising
+            try:
+                error_body = response.json()
+                logging.error(f"API request failed with {response.status_code}: {error_body}")
+            except Exception:
+                logging.error(f"API request failed with {response.status_code}: {response.text}")
+
         response.raise_for_status()
         return response.json()
 

@@ -337,18 +337,32 @@ Return JSON:
 }}"""
 
         client = self._get_llm_client()
-        response = client.generate_response(
-            messages=[
-                {"role": "system", "content": self.SEARCH_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ]
-        )
 
-        content = client.extract_text_content(response)
+        try:
+            response = client.generate_response(
+                messages=[
+                    {"role": "system", "content": self.SEARCH_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            content = client.extract_text_content(response)
+        except Exception as e:
+            self.logger.error(f"Failed to generate summary via LLM: {e}")
+            self.logger.debug(f"Prompt length: {len(prompt)} chars, Scratchpad items: {len(self.scratchpad)}")
+            # Fallback summary when API call fails
+            return {
+                "query": query,
+                "summary": f"Found {len(self.scratchpad)} items but summary generation failed due to API error",
+                "key_findings": [],
+                "sources_searched": list(set(item['source'] for item in self.scratchpad)),
+                "confidence": 0.2,
+                "limitations": f"Summary generation failed: {str(e)}"
+            }
+
         # Fallback summary if parsing fails
         fallback = {
             "query": query,
-            "summary": f"Found {len(self.scratchpad)} items but summary generation failed",
+            "summary": f"Found {len(self.scratchpad)} items but summary parsing failed",
             "key_findings": [],
             "sources_searched": list(set(item['source'] for item in self.scratchpad)),
             "confidence": 0.3,
@@ -374,21 +388,39 @@ Return JSON:
         return '\n'.join(summary_parts)
 
     def _format_scratchpad_for_summary(self) -> str:
-        """Format full scratchpad for final summary."""
+        """Format full scratchpad for final summary with token-aware truncation."""
         formatted_parts = []
+        # Conservative limit: aim for ~60K tokens in findings to leave room for system/user prompt
+        # Rough estimate: 1 token ≈ 4 characters
+        MAX_CHARS = 60000 * 4  # ~240K chars ≈ 60K tokens
+        current_length = 0
 
         for idx, item in enumerate(self.scratchpad, 1):
-            formatted_parts.append(f"\n[Finding {idx}]")
-            formatted_parts.append(f"Source: {item['source']}")
-            formatted_parts.append(f"Content: {item['content']}")
+            # Format this finding
+            finding_parts = [
+                f"\n[Finding {idx}]",
+                f"Source: {item['source']}",
+                f"Content: {item['content'][:10000]}"  # Truncate individual content to 10K chars
+            ]
 
             meta = item['metadata']
             if meta.get('title'):
-                formatted_parts.append(f"Title: {meta['title']}")
+                finding_parts.append(f"Title: {meta['title']}")
             if meta.get('timestamp'):
-                formatted_parts.append(f"Time: {meta['timestamp']}")
+                finding_parts.append(f"Time: {meta['timestamp']}")
             if meta.get('confidence'):
-                formatted_parts.append(f"Confidence: {meta['confidence']}")
+                finding_parts.append(f"Confidence: {meta['confidence']}")
+
+            finding_text = '\n'.join(finding_parts)
+            finding_length = len(finding_text)
+
+            # Check if adding this finding would exceed limit
+            if current_length + finding_length > MAX_CHARS:
+                formatted_parts.append(f"\n[Truncated: {len(self.scratchpad) - idx + 1} more findings omitted due to size]")
+                break
+
+            formatted_parts.append(finding_text)
+            current_length += finding_length
 
         return '\n'.join(formatted_parts)
 
