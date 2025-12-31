@@ -48,6 +48,21 @@ class TestWebToolContract:
         with pytest.raises(ValueError, match="Required parameter 'operation'"):
             web_tool.run(url="https://example.com")
 
+    def test_http_without_method_gives_helpful_error(self, web_tool, authenticated_user):
+        """CONTRACT: http operation without method suggests using fetch instead."""
+        with pytest.raises(ValueError, match="'http' operation requires 'method' parameter"):
+            web_tool.run(operation="http", url="https://example.com")
+
+    def test_search_without_query_gives_helpful_error(self, web_tool, authenticated_user):
+        """CONTRACT: search operation without query gives clear error."""
+        with pytest.raises(ValueError, match="'search' operation requires 'query' parameter"):
+            web_tool.run(operation="search")
+
+    def test_fetch_without_url_gives_helpful_error(self, web_tool, authenticated_user):
+        """CONTRACT: fetch operation without url gives clear error."""
+        with pytest.raises(ValueError, match="'fetch' operation requires 'url' parameter"):
+            web_tool.run(operation="fetch")
+
 
 class TestSearchInputValidation:
     """Tests for search operation input validation."""

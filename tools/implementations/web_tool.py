@@ -121,30 +121,30 @@ class WebTool(Tool):
 
     anthropic_schema = {
         "name": "web_tool",
-        "description": "Access the web: (1) search for current information via Kagi, (2) fetch and extract webpage content, (3) make HTTP requests to APIs",
+        "description": "Access the web: (1) 'search' - find current information via search engines, (2) 'fetch' - extract content from webpages with LLM, (3) 'http' - make direct HTTP API requests. Use 'fetch' to read webpage content, 'http' for structured API calls.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
                     "enum": ["search", "fetch", "http"],
-                    "description": "The operation to perform"
+                    "description": "Operation: 'search' to find info, 'fetch' to read webpage content, 'http' to call APIs"
                 },
-                "query": {"type": "string", "description": "Search query (for search operation)"},
-                "max_results": {"type": "integer", "description": "Max search results (default 5)"},
-                "url": {"type": "string", "description": "URL for fetch/http operations"},
-                "prompt": {"type": "string", "description": "Extraction prompt for fetch operation"},
-                "format": {"type": "string", "enum": ["text", "markdown", "html"], "description": "Output format for fetch"},
-                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "description": "HTTP method"},
-                "params": {"type": "object", "description": "Query parameters for http"},
-                "headers": {"type": "object", "description": "HTTP headers"},
-                "data": {"type": "object", "description": "Form data for http"},
-                "json_body": {"type": "object", "description": "JSON body for http"},
+                "query": {"type": "string", "description": "Search query (required for 'search' operation)"},
+                "max_results": {"type": "integer", "description": "Max search results (default 5, for 'search')"},
+                "url": {"type": "string", "description": "URL (required for 'fetch' and 'http' operations)"},
+                "prompt": {"type": "string", "description": "Content extraction instructions (for 'fetch' operation)"},
+                "format": {"type": "string", "enum": ["text", "markdown", "html"], "description": "Output format (for 'fetch' operation, default 'text')"},
+                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "description": "HTTP method (required for 'http' operation)"},
+                "params": {"type": "object", "description": "Query parameters (for 'http' operation)"},
+                "headers": {"type": "object", "description": "HTTP headers (for 'http' operation)"},
+                "data": {"type": "object", "description": "Form data (for 'http' operation)"},
+                "json_body": {"type": "object", "description": "JSON request body (for 'http' operation)"},
                 "timeout": {"type": "integer", "description": "Request timeout in seconds"},
-                "response_format": {"type": "string", "enum": ["json", "text", "full"], "description": "Response format for http"},
+                "response_format": {"type": "string", "enum": ["json", "text", "full"], "description": "Response format (for 'http' operation, default 'json')"},
                 "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Allowed domains filter"},
                 "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Blocked domains filter"},
-                "include_metadata": {"type": "boolean", "description": "Include page metadata in fetch"}
+                "include_metadata": {"type": "boolean", "description": "Include page metadata (for 'fetch' operation)"}
             },
             "required": ["operation"]
         }
@@ -168,19 +168,31 @@ class WebTool(Tool):
         self._init_kagi()
 
     def run(self, **params) -> Dict[str, Any]:
-        """Route to appropriate operation handler."""
+        """Route to appropriate operation handler with helpful validation."""
         operation = params.pop("operation", None)
         if not operation:
-            raise ValueError("Required parameter 'operation' not provided")
+            raise ValueError("Required parameter 'operation' not provided. Must be: 'search', 'fetch', or 'http'")
 
+        # Provide helpful error messages for common mistakes
         if operation == "search":
+            if "query" not in params:
+                raise ValueError("'search' operation requires 'query' parameter")
             return self._search(SearchInput(**params))
         elif operation == "fetch":
+            if "url" not in params:
+                raise ValueError("'fetch' operation requires 'url' parameter. Use this to extract content from webpages.")
             return self._fetch(FetchInput(**params))
         elif operation == "http":
+            if "url" not in params:
+                raise ValueError("'http' operation requires 'url' parameter")
+            if "method" not in params:
+                raise ValueError(
+                    "'http' operation requires 'method' parameter (GET, POST, PUT, DELETE). "
+                    "Note: To simply read webpage content, use operation='fetch' instead."
+                )
             return self._http(HttpInput(**params))
         else:
-            raise ValueError(f"Unknown operation: {operation}. Must be: search, fetch, or http")
+            raise ValueError(f"Unknown operation: {operation}. Must be: 'search', 'fetch', or 'http'")
 
     # --- Search Operation ---
 
