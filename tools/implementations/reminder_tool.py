@@ -50,7 +50,9 @@ class ReminderTool(Tool):
 
     anthropic_schema = {
         "name": "reminder_tool",
-        "description": "Manages scheduled reminders with contact information integration. Use this tool when the user wants to create, view, or manage reminders about tasks, follow-ups, or appointments. You can also create internal reminders for yourself using category='internal' to track things you need to remember or follow up on later.",
+        "description": """Manages scheduled reminders with contact information integration. Use this tool when the user wants to create, view, or manage reminders about tasks, follow-ups, or appointments. You can also create internal reminders for yourself using category='internal' to track things you need to remember or follow up on later.
+
+IMPORTANT: When operation='get_reminders', you MUST provide the 'date_type' parameter.""",
         "input_schema": {
                 "type": "object",
                 "properties": {
@@ -91,7 +93,7 @@ class ReminderTool(Tool):
                     "date_type": {
                         "type": "string",
                         "enum": ["today", "tomorrow", "upcoming", "past", "all", "date", "range", "overdue"],
-                        "description": "Type of date query for get_reminders operation (required for get_reminders)"
+                        "description": "REQUIRED for get_reminders operation. Type of date query: 'today' for today's reminders, 'tomorrow' for tomorrow's, 'upcoming' for all future reminders, 'overdue' for past-due incomplete reminders, 'past' for all past reminders, 'all' for everything, 'date' for a specific date (requires specific_date), 'range' for a date range (requires start_date and end_date)"
                     },
                     "specific_date": {
                         "type": "string",
