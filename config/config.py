@@ -15,9 +15,7 @@ class ApiConfig(BaseModel):
     """Anthropic API configuration settings."""
 
     # Model configuration
-    model: str = Field(default="claude-opus-4-5-20251101", description="Anthropic reasoning model for complex operations")
-    # execution_model, execution_endpoint, execution_api_key_name moved to internal_llm table
-    simple_tools: List[str] = Field(default=["reminder_tool", "punchclock_tool", "weather_tool", "domaindoc_tool"], description="Tools that don't require reasoning model capabilities")
+    model: str = Field(default="claude-opus-4-5-20251101", description="Primary model for all operations")
 
     # API key configuration
     api_key_name: str = Field(default="anthropic_key", description="Name of the Anthropic API key to retrieve from Vault")
@@ -162,7 +160,7 @@ class DomainKnowledgeConfig(BaseModel):
 class SystemConfig(BaseModel):
     """System-level configuration settings."""
 
-    log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    log_level: str = Field(default="WARNING", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     timezone: str = Field(default="America/Chicago", description="Default timezone for date/time operations (must be a valid IANA timezone name like 'America/New_York', 'Europe/London')")
     streaming: bool = Field(default=True, description="Whether to stream responses from the API")
     json_indent: int = Field(default=2, description="Indentation level for JSON output")

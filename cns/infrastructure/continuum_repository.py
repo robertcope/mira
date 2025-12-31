@@ -258,6 +258,8 @@ class ContinuumRepository:
                     logger.info(f"[SINGLE] Activity day incremented successfully for user {user_id}, result: {result}")
                 except Exception as e:
                     logger.error(f"[SINGLE] Failed to increment activity day for user {user_id}: {e}", exc_info=True)
+                # Note: virtual_last_message_time is cleared in increment_segment_turn()
+                # which is called at the API entry point before message save
 
         except Exception as e:
             logger.error(f"Failed to save message to continuum {continuum_id}: {str(e)}")
@@ -871,11 +873,12 @@ class ContinuumRepository:
         """
         db = self._get_client(user_id)
 
-        # Atomically increment and return the new value
+        # Atomically increment turn count AND clear any virtual_last_message_time
+        # (user is active, so postpone state should be cleared)
         query = """
             UPDATE messages
             SET metadata = jsonb_set(
-                metadata,
+                metadata - 'virtual_last_message_time',
                 '{segment_turn_count}',
                 to_jsonb((metadata->>'segment_turn_count')::int + 1)
             )
@@ -885,7 +888,7 @@ class ContinuumRepository:
             RETURNING (metadata->>'segment_turn_count')::int as turn_count
         """
 
-        rows = db.execute_query(query, (str(continuum_id),))
+        rows = db.execute_returning(query, (str(continuum_id),))
 
         if rows and rows[0].get('turn_count'):
             return rows[0]['turn_count']
@@ -923,7 +926,7 @@ class ContinuumRepository:
             SET metadata = jsonb_set(
                 metadata,
                 '{virtual_last_message_time}',
-                to_jsonb(%s)
+                to_jsonb(%s::text)
             )
             WHERE continuum_id = %s
                 AND metadata->>'is_segment_boundary' = 'true'
@@ -931,7 +934,36 @@ class ContinuumRepository:
             RETURNING id
         """
 
-        rows = db.execute_query(query, (virtual_time.isoformat(), str(continuum_id)))
+        # Use execute_returning to ensure commit happens
+        rows = db.execute_returning(query, (virtual_time.isoformat(), str(continuum_id)))
+        return bool(rows)
+
+    def clear_segment_virtual_last_message_time(
+        self,
+        continuum_id: Union[str, UUID],
+        user_id: str
+    ) -> bool:
+        """
+        Clear virtual_last_message_time from active segment sentinel.
+
+        Called when user sends a message to reset the postpone state.
+
+        Returns:
+            True if segment was updated, False if no active segment found
+        """
+        db = self._get_client(user_id)
+
+        query = """
+            UPDATE messages
+            SET metadata = metadata - 'virtual_last_message_time'
+            WHERE continuum_id = %s
+                AND metadata->>'is_segment_boundary' = 'true'
+                AND metadata->>'status' = 'active'
+                AND metadata ? 'virtual_last_message_time'
+            RETURNING id
+        """
+
+        rows = db.execute_returning(query, (str(continuum_id),))
         return bool(rows)
 
     def find_collapsed_segments(

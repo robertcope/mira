@@ -21,6 +21,7 @@ from cns.core.message import Message
 from lt_memory.models import ProcessingChunk
 from lt_memory.db_access import LTMemoryDB
 from config.config import ExtractionConfig
+from utils.tag_parser import format_memory_id
 
 logger = logging.getLogger(__name__)
 
@@ -160,21 +161,6 @@ class ExtractionEngine:
                 chunk_index=chunk.chunk_index
             )
 
-    @staticmethod
-    def _shorten_memory_id(memory_id: str) -> str:
-        """
-        Shorten UUID to first 8 hex characters for compact prompt representation.
-
-        Args:
-            memory_id: Full UUID string
-
-        Returns:
-            First 8 hex characters (no dashes)
-        """
-        if not memory_id:
-            return ""
-        return memory_id.replace('-', '')[:8]
-
     def _build_identifier_maps(
         self,
         memory_ids: List[str]
@@ -198,7 +184,7 @@ class ExtractionEngine:
         short_to_full: Dict[str, str] = {}
 
         for full_id in memory_ids:
-            short_id = self._shorten_memory_id(full_id)
+            short_id = format_memory_id(full_id)
             if not short_id:
                 continue
 

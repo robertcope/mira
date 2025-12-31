@@ -20,6 +20,7 @@ from lt_memory.vector_ops import VectorOps
 from lt_memory.db_access import LTMemoryDB
 from clients.llm_provider import LLMProvider
 from utils.timezone_utils import utc_now
+from utils.tag_parser import format_memory_id
 
 logger = logging.getLogger(__name__)
 
@@ -78,21 +79,6 @@ class ExtractionService:
 
         logger.info("Loaded memory extraction prompts")
 
-    @staticmethod
-    def _shorten_memory_id(memory_id: str) -> str:
-        """
-        Shorten UUID to first 8 hex characters for compact prompt representation.
-
-        Args:
-            memory_id: Full UUID string
-
-        Returns:
-            First 8 hex characters (no dashes)
-        """
-        if not memory_id:
-            return ""
-        return memory_id.replace('-', '')[:8]
-
     def _build_identifier_maps(
         self,
         memory_ids: List[str]
@@ -116,7 +102,7 @@ class ExtractionService:
         short_to_full: Dict[str, str] = {}
 
         for full_id in memory_ids:
-            short_id = self._shorten_memory_id(full_id)
+            short_id = format_memory_id(full_id)
             if not short_id:
                 continue
 

@@ -2,6 +2,7 @@
 import logging
 from typing import List, Dict, Any
 
+from utils.tag_parser import format_memory_id
 from .base import EventAwareTrinket
 
 logger = logging.getLogger(__name__)
@@ -77,11 +78,12 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
         """Format a primary memory as XML with nested linked_memories."""
         from utils.timezone_utils import format_relative_time, parse_time_string, format_datetime
 
-        memory_id = memory.get('id', 'unknown')
+        raw_id = memory.get('id', '')
+        formatted_id = format_memory_id(raw_id) if raw_id else 'unknown'
         text = memory.get('text', '')
 
         # Build attributes
-        attrs = [f'id="{memory_id}"']
+        attrs = [f'id="{formatted_id}"']
 
         confidence = memory.get('confidence') or memory.get('similarity_score')
         if confidence is not None and confidence > 0.75:
@@ -154,7 +156,9 @@ class ProactiveMemoryTrinket(EventAwareTrinket):
             confidence = link_meta.get('confidence')
 
             # Build attributes
-            attrs = [f'id="{linked.get("id", "unknown")}"', f'link_type="{link_type}"']
+            raw_id = linked.get('id', '')
+            formatted_id = format_memory_id(raw_id) if raw_id else 'unknown'
+            attrs = [f'id="{formatted_id}"', f'link_type="{link_type}"']
             if confidence is not None and confidence > 0.75:
                 attrs.append(f'confidence="{int(confidence * 100)}"')
 

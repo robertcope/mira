@@ -52,6 +52,140 @@ EOF
 }
 
 # ============================================================================
+# Rollback Functions
+# ============================================================================
+# Emergency rollback if Phase 6 (Fresh Installation) fails midway
+
+# Attempt to restore system from backup after failed installation
+# This is a best-effort recovery - manual intervention may still be needed
+rollback_from_backup() {
+    local backup_dir="$1"
+
+    echo ""
+    echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}${RED}  INSTALLATION FAILED - ATTEMPTING ROLLBACK${RESET}"
+    echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════${RESET}"
+    echo ""
+
+    print_info "Backup directory: $backup_dir"
+    echo ""
+
+    local rollback_success=true
+
+    # Step 1: Restore old application if it was backed up
+    if [ -d "${backup_dir}/old_app" ]; then
+        echo -ne "${DIM}${ARROW}${RESET} Restoring old application... "
+        if [ -d "/opt/mira/app" ]; then
+            sudo rm -rf /opt/mira/app
+        fi
+        if sudo mv "${backup_dir}/old_app" /opt/mira/app; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            print_error "Failed to restore old application"
+            rollback_success=false
+        fi
+    else
+        print_warning "No old application backup found"
+    fi
+
+    # Step 2: Restore Vault data if init keys exist
+    if [ -f "${backup_dir}/init-keys.txt" ]; then
+        echo -ne "${DIM}${ARROW}${RESET} Restoring Vault init keys... "
+        sudo mkdir -p /opt/vault
+        if sudo cp "${backup_dir}/init-keys.txt" /opt/vault/init-keys.txt; then
+            sudo chmod 600 /opt/vault/init-keys.txt
+            [ -f "${backup_dir}/role-id.txt" ] && sudo cp "${backup_dir}/role-id.txt" /opt/vault/
+            [ -f "${backup_dir}/secret-id.txt" ] && sudo cp "${backup_dir}/secret-id.txt" /opt/vault/
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${ERROR}"
+            rollback_success=false
+        fi
+    fi
+
+    # Step 3: Recreate database if it was dropped
+    echo -ne "${DIM}${ARROW}${RESET} Checking database state... "
+    local db_exists
+    if [ "$OS" = "linux" ]; then
+        db_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='mira_service'" 2>/dev/null || echo "")
+    else
+        db_exists=$(psql postgres -tAc "SELECT 1 FROM pg_database WHERE datname='mira_service'" 2>/dev/null || echo "")
+    fi
+
+    if [ -z "$db_exists" ] && [ -f "${backup_dir}/postgresql_backup.dump" ]; then
+        echo -e "${WARNING} Database missing"
+        echo -ne "${DIM}${ARROW}${RESET} Recreating database and restoring data... "
+
+        # Create database
+        if [ "$OS" = "linux" ]; then
+            sudo -u postgres psql -c "CREATE DATABASE mira_service;" > /dev/null 2>&1 || true
+            # Apply schema from backup's old app if available
+            if [ -f "${backup_dir}/old_app/deploy/mira_service_schema.sql" ]; then
+                sudo -u postgres psql -d mira_service -f "${backup_dir}/old_app/deploy/mira_service_schema.sql" > /dev/null 2>&1 || true
+            fi
+            # Restore data
+            local temp_dump="/tmp/mira_rollback_$$.dump"
+            sudo cp "${backup_dir}/postgresql_backup.dump" "$temp_dump"
+            sudo chown postgres:postgres "$temp_dump"
+            sudo -u postgres pg_restore -d mira_service --data-only --disable-triggers "$temp_dump" 2>/dev/null || true
+            sudo rm -f "$temp_dump"
+        else
+            psql postgres -c "CREATE DATABASE mira_service;" > /dev/null 2>&1 || true
+            if [ -f "${backup_dir}/old_app/deploy/mira_service_schema.sql" ]; then
+                psql -d mira_service -f "${backup_dir}/old_app/deploy/mira_service_schema.sql" > /dev/null 2>&1 || true
+            fi
+            PGPASSWORD="$MIGRATE_DB_PASSWORD" pg_restore -U mira_admin -h localhost -d mira_service \
+                --data-only --disable-triggers "${backup_dir}/postgresql_backup.dump" 2>/dev/null || true
+        fi
+        echo -e "${CHECKMARK} ${DIM}(best effort)${RESET}"
+    else
+        echo -e "${CHECKMARK} ${DIM}(database exists)${RESET}"
+    fi
+
+    # Step 4: Restore user data files
+    if [ -d "${backup_dir}/user_data" ]; then
+        echo -ne "${DIM}${ARROW}${RESET} Restoring user data files... "
+        sudo mkdir -p /opt/mira/app/data/users
+        if sudo cp -a "${backup_dir}/user_data"/* /opt/mira/app/data/users/ 2>/dev/null; then
+            echo -e "${CHECKMARK}"
+        else
+            echo -e "${WARNING} ${DIM}(may be empty)${RESET}"
+        fi
+    fi
+
+    echo ""
+    if [ "$rollback_success" = true ]; then
+        echo -e "${BOLD}${YELLOW}════════════════════════════════════════════════════════════${RESET}"
+        echo -e "${YELLOW}  ROLLBACK COMPLETED - MANUAL VERIFICATION REQUIRED${RESET}"
+        echo -e "${BOLD}${YELLOW}════════════════════════════════════════════════════════════${RESET}"
+        echo ""
+        print_info "The system has been restored to its pre-migration state."
+        print_info "You may need to:"
+        print_info "  1. Start Vault: sudo systemctl start vault (or manually)"
+        print_info "  2. Unseal Vault with keys from: ${backup_dir}/init-keys.txt"
+        print_info "  3. Start PostgreSQL if not running"
+        print_info "  4. Start MIRA: mira or sudo systemctl start mira"
+        echo ""
+        print_info "Backup preserved at: $backup_dir"
+        print_info "Check migration log: ${backup_dir}/migration.log"
+    else
+        echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════${RESET}"
+        echo -e "${RED}  ROLLBACK FAILED - MANUAL RECOVERY REQUIRED${RESET}"
+        echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════${RESET}"
+        echo ""
+        print_error "Automatic rollback could not fully restore the system."
+        print_info "Manual recovery steps:"
+        print_info "  1. Restore app: sudo cp -a ${backup_dir}/old_app /opt/mira/app"
+        print_info "  2. Restore Vault: sudo cp ${backup_dir}/init-keys.txt /opt/vault/"
+        print_info "  3. Restore DB: pg_restore -d mira_service ${backup_dir}/postgresql_backup.dump"
+        print_info "  4. Restore user data: sudo cp -a ${backup_dir}/user_data/* /opt/mira/app/data/users/"
+    fi
+
+    return 0
+}
+
+# ============================================================================
 # Dry-Run Mode Functions
 # ============================================================================
 # When DRY_RUN_MODE=true, show what would happen without making changes
@@ -500,14 +634,16 @@ verify_vault_snapshot() {
 # We compare structural data (users, relationships) but ignore timestamps.
 
 # Tables to snapshot with their structural columns (excluding timestamps)
-# Format: "table:col1,col2,col3"
+# Format: "table:order_by_col:col1,col2,col3"
+# order_by_col is the column to ORDER BY (usually primary key)
 DB_STRUCTURAL_TABLES=(
-    "users:id,email,first_name,last_name,timezone,llm_tier,max_tier,is_active,memory_manipulation_enabled,cumulative_activity_days"
-    "continuums:id,user_id,last_message_position"
-    "api_tokens:id,user_id,name,token_hash"
-    "account_tiers:name,model,provider,endpoint_url,api_key_name,thinking_budget"
-    "domain_knowledge_blocks:id,user_id,domain_label,domain_name,enabled"
-    "entities:id,user_id,name,entity_type"
+    "users:id:id,email,first_name,last_name,timezone,llm_tier,max_tier,is_active,memory_manipulation_enabled,cumulative_activity_days"
+    "continuums:id:id,user_id,last_message_position"
+    "api_tokens:id:id,user_id,name,token_hash"
+    "domain_knowledge_blocks:id:id,user_id,domain_label,domain_name,enabled"
+    "entities:id:id,user_id,name,entity_type"
+    "account_tiers:name:name,model,provider,endpoint_url,api_key_name"
+    "internal_llm:name:name,model,endpoint_url,api_key_name"
 )
 
 # Tables where we only verify counts (too large or timestamps dominate)
@@ -518,12 +654,18 @@ DB_COUNT_ONLY_TABLES=(
 )
 
 # Helper: Run psql query based on OS
+# Uses MIGRATE_DB_PASSWORD on macOS if available (set by backup_vault_secrets)
 run_psql() {
     local query="$1"
     if [ "$OS" = "linux" ]; then
         sudo -u postgres psql -d mira_service -tAc "$query" 2>/dev/null
     else
-        psql -U mira_admin -h localhost -d mira_service -tAc "$query" 2>/dev/null
+        # Use PGPASSWORD if MIGRATE_DB_PASSWORD is set, otherwise rely on .pgpass/trust
+        if [ -n "$MIGRATE_DB_PASSWORD" ]; then
+            PGPASSWORD="$MIGRATE_DB_PASSWORD" psql -U mira_admin -h localhost -d mira_service -tAc "$query" 2>/dev/null
+        else
+            psql -U mira_admin -h localhost -d mira_service -tAc "$query" 2>/dev/null
+        fi
     fi
 }
 
@@ -537,8 +679,9 @@ capture_database_snapshot() {
     echo "{" > "$snapshot_file"
     echo '  "row_counts": {' >> "$snapshot_file"
 
-    # Capture row counts for ALL user data tables
-    local all_tables="users continuums messages memories entities api_tokens user_activity_days domain_knowledge_blocks domain_knowledge_block_content account_tiers"
+    # Capture row counts for all backed up tables (must match backup_postgresql_data tables)
+    # Includes account_tiers and internal_llm because offline mode customizes them
+    local all_tables="users continuums messages memories entities api_tokens user_activity_days domain_knowledge_blocks domain_knowledge_block_content extraction_batches post_processing_batches account_tiers internal_llm"
     local first=true
 
     for table in $all_tables; do
@@ -562,12 +705,15 @@ capture_database_snapshot() {
 
     first=true
     for table_spec in "${DB_STRUCTURAL_TABLES[@]}"; do
+        # Parse format: "table:order_by_col:col1,col2,col3"
         local table="${table_spec%%:*}"
-        local columns="${table_spec#*:}"
+        local rest="${table_spec#*:}"
+        local order_col="${rest%%:*}"
+        local columns="${rest#*:}"
 
-        # Query structural columns, order by primary key for consistent comparison
+        # Query structural columns, order by specified column for consistent comparison
         local data
-        data=$(run_psql "SELECT json_agg(row_to_json(t) ORDER BY id) FROM (SELECT $columns FROM $table ORDER BY id) t" 2>/dev/null || echo "[]")
+        data=$(run_psql "SELECT json_agg(row_to_json(t) ORDER BY ${order_col}) FROM (SELECT $columns FROM $table ORDER BY ${order_col}) t" 2>/dev/null || echo "[]")
 
         # Handle null result
         if [ -z "$data" ] || [ "$data" = "" ]; then
@@ -1051,8 +1197,9 @@ backup_postgresql_data() {
 
     echo -ne "${DIM}${ARROW}${RESET} Backing up PostgreSQL data... "
 
-    # Tables to backup (user data only, not system config)
-    local tables="users continuums messages memories entities user_activity_days domain_knowledge_blocks domain_knowledge_block_content api_tokens extraction_batches post_processing_batches"
+    # Tables to backup (user data + system config that may be customized)
+    # account_tiers and internal_llm are included because offline mode customizes them
+    local tables="users continuums messages memories entities user_activity_days domain_knowledge_blocks domain_knowledge_block_content api_tokens extraction_batches post_processing_batches account_tiers internal_llm"
 
     # Build table arguments for pg_dump
     local table_args=""
@@ -1063,6 +1210,9 @@ backup_postgresql_data() {
     local pg_result=0
 
     if [ "$OS" = "linux" ]; then
+        # Write to temp file first - postgres user can't write to backup dir owned by mira_service
+        local temp_dump="/tmp/mira_pg_backup_$$.dump"
+
         if [ "$LOUD_MODE" = true ]; then
             echo ""  # newline for verbose output
             sudo -u postgres pg_dump -d mira_service \
@@ -1071,7 +1221,7 @@ backup_postgresql_data() {
                 --no-privileges \
                 --data-only \
                 $table_args \
-                --file="$backup_file" --verbose 2>&1
+                --file="$temp_dump" --verbose 2>&1
             pg_result=$?
         else
             sudo -u postgres pg_dump -d mira_service \
@@ -1080,8 +1230,16 @@ backup_postgresql_data() {
                 --no-privileges \
                 --data-only \
                 $table_args \
-                --file="$backup_file" 2>"$error_file"
+                --file="$temp_dump" 2>"$error_file"
             pg_result=$?
+        fi
+
+        # Move temp file to backup directory if successful
+        if [ $pg_result -eq 0 ] && [ -f "$temp_dump" ]; then
+            sudo mv "$temp_dump" "$backup_file"
+            sudo chown $(whoami) "$backup_file"
+        else
+            rm -f "$temp_dump" 2>/dev/null
         fi
     else
         # macOS: Use PGPASSWORD if set, otherwise rely on .pgpass/trust auth
@@ -1146,31 +1304,38 @@ backup_vault_secrets() {
     }
 
     local success=true
+    local vault_output
 
     # Export each secret path to JSON
     # The .data.data path extracts the actual secret data from KV v2 response
-    if vault kv get -format=json secret/mira/api_keys 2>/dev/null | jq '.data.data' > "${BACKUP_DIR}/vault_api_keys.json"; then
-        :
+    # Only create files when secrets exist (prevents empty/invalid JSON files)
+
+    vault_output=$(vault kv get -format=json secret/mira/api_keys 2>/dev/null) || true
+    if [ -n "$vault_output" ]; then
+        echo "$vault_output" | jq '.data.data' > "${BACKUP_DIR}/vault_api_keys.json"
     else
         print_warning "No api_keys secret found (may be okay for offline mode)"
     fi
 
-    if vault kv get -format=json secret/mira/database 2>/dev/null | jq '.data.data' > "${BACKUP_DIR}/vault_database.json"; then
-        :
+    vault_output=$(vault kv get -format=json secret/mira/database 2>/dev/null) || true
+    if [ -n "$vault_output" ]; then
+        echo "$vault_output" | jq '.data.data' > "${BACKUP_DIR}/vault_database.json"
     else
         echo -e "${ERROR}"
         print_error "Cannot backup database credentials"
         success=false
     fi
 
-    if vault kv get -format=json secret/mira/services 2>/dev/null | jq '.data.data' > "${BACKUP_DIR}/vault_services.json"; then
-        :
+    vault_output=$(vault kv get -format=json secret/mira/services 2>/dev/null) || true
+    if [ -n "$vault_output" ]; then
+        echo "$vault_output" | jq '.data.data' > "${BACKUP_DIR}/vault_services.json"
     else
         print_warning "No services secret found"
     fi
 
-    if vault kv get -format=json secret/mira/auth 2>/dev/null | jq '.data.data' > "${BACKUP_DIR}/vault_auth.json"; then
-        :
+    vault_output=$(vault kv get -format=json secret/mira/auth 2>/dev/null) || true
+    if [ -n "$vault_output" ]; then
+        echo "$vault_output" | jq '.data.data' > "${BACKUP_DIR}/vault_auth.json"
     else
         print_warning "No auth secret found (credential encryption key may be missing)"
     fi
@@ -1356,8 +1521,22 @@ restore_postgresql_data() {
 
     local pg_result=0
 
+    # Clear system config tables that were populated by schema INSERT statements
+    # This allows pg_restore to insert the backed-up data without primary key conflicts
+    # These tables may have customizations (e.g., offline mode endpoints) that must be preserved
+    if [ "$OS" = "linux" ]; then
+        sudo -u postgres psql -d mira_service -c "DELETE FROM account_tiers; DELETE FROM internal_llm;" > /dev/null 2>&1 || true
+    else
+        psql -U mira_admin -h localhost -d mira_service -c "DELETE FROM account_tiers; DELETE FROM internal_llm;" > /dev/null 2>&1 || true
+    fi
+
     # Disable triggers during restore for FK constraint handling
     if [ "$OS" = "linux" ]; then
+        # Copy backup to temp location - postgres user can't read from backup dir owned by mira_service
+        local temp_dump="/tmp/mira_pg_restore_$$.dump"
+        sudo cp "$backup_file" "$temp_dump"
+        sudo chown postgres:postgres "$temp_dump"
+
         if [ "$LOUD_MODE" = true ]; then
             echo ""  # newline for verbose output
             sudo -u postgres pg_restore -d mira_service \
@@ -1365,16 +1544,19 @@ restore_postgresql_data() {
                 --disable-triggers \
                 --single-transaction \
                 --verbose \
-                "$backup_file" 2>&1
+                "$temp_dump" 2>&1
             pg_result=$?
         else
             sudo -u postgres pg_restore -d mira_service \
                 --data-only \
                 --disable-triggers \
                 --single-transaction \
-                "$backup_file" 2>"$error_file"
+                "$temp_dump" 2>"$error_file"
             pg_result=$?
         fi
+
+        # Clean up temp file
+        sudo rm -f "$temp_dump"
     else
         # macOS: Use PGPASSWORD if set, otherwise rely on .pgpass/trust auth
         local pg_env=""

@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Tuple, Set, Optional
 
 from cns.core.continuum import Continuum
 from clients.vault_client import get_api_key
+from utils.tag_parser import format_memory_id
 
 logger = logging.getLogger(__name__)
 
@@ -179,13 +180,6 @@ class FingerprintGenerator:
             raise RuntimeError(f"Fingerprint generation failed: {str(e)}") from e
 
     @staticmethod
-    def _shorten_id(memory_id: str) -> str:
-        """Shorten UUID to 8-char hex prefix for compact prompt representation."""
-        if not memory_id:
-            return ""
-        return memory_id.replace('-', '')[:8]
-
-    @staticmethod
     def _importance_to_dots(importance_score: float) -> str:
         """
         Convert importance score (0.0-1.0) to 5-dot visual indicator.
@@ -223,10 +217,10 @@ class FingerprintGenerator:
             text = memory.get('text', '')
             memory_id = memory.get('id', '')
             importance = memory.get('importance_score', 0.5)
-            short_id = self._shorten_id(memory_id)
+            formatted_id = format_memory_id(memory_id)
             dots = self._importance_to_dots(importance)
-            if text and short_id:
-                lines.append(f"- {short_id} [{dots}] - {text}")
+            if text and formatted_id:
+                lines.append(f"- {formatted_id} [{dots}] - {text}")
             elif text:
                 # Fallback if no ID (shouldn't happen but be defensive)
                 lines.append(f"- [{dots}] - {text}")
@@ -288,9 +282,10 @@ class FingerprintGenerator:
         if retention_match:
             retention_block = retention_match.group(1)
             # Extract 8-char IDs from lines starting with [x]
-            # Format: [x] - a1b2c3d4 - memory text
+            # Format: [x] - mem_a1B2c3D4 - memory text
+            # UUIDs only contain hex chars (0-9, a-f)
             id_matches = re.findall(
-                r'\[x\]\s*-\s*([a-f0-9]{8})',
+                r'\[x\]\s*-\s*mem_([a-fA-F0-9]{8})',
                 retention_block,
                 re.IGNORECASE
             )

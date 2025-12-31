@@ -22,6 +22,7 @@ from lt_memory.models import (
 )
 from utils.timezone_utils import utc_now, format_utc_iso
 from utils.user_context import get_current_user_id
+from utils.tag_parser import parse_memory_id
 from utils.database_session_manager import LTMemorySessionManager
 
 logger = logging.getLogger(__name__)
@@ -535,7 +536,8 @@ class LTMemoryDB:
 
         with self.session_manager.get_session(resolved_user_id) as session:
             with session.transaction():
-                like_patterns = [f"{sid.lower()}%" for sid in short_ids]
+                # Strip mem_ prefix if present before building LIKE patterns
+                like_patterns = [f"{parse_memory_id(sid).lower()}%" for sid in short_ids]
 
                 update_query = """
                 UPDATE memories m

@@ -30,10 +30,11 @@ from utils.scheduler_service import scheduler_service
 from utils.scheduled_tasks import initialize_all_scheduled_tasks
 from utils.colored_logging import setup_colored_root_logging
 
-setup_colored_root_logging(log_level=logging.INFO, fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+setup_colored_root_logging(log_level=logging.WARNING, fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Suppress APScheduler debug noise - only show warnings and above
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
+# Set APScheduler loggers to DEBUG to suppress routine job execution logs
+logging.getLogger('apscheduler.executors.default').setLevel(logging.DEBUG)
+logging.getLogger('apscheduler.scheduler').setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 

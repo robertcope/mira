@@ -71,8 +71,16 @@ class SystemPromptComposer:
         Args:
             prompt: Base system prompt that always appears first
         """
+        # Add delimiter after base prompt to visually separate from injected content
+        delimiter = "═" * 60
+        scaffolding_note = (
+            "Everything after this delimiter is part of MIRA's scaffolding, "
+            "injected to provide additional context during the reply."
+        )
+        delimited_prompt = f"{prompt}\n\n{delimiter}\n{scaffolding_note}\n{delimiter}"
+
         self._sections['base_prompt'] = SectionData(
-            content=prompt,
+            content=delimited_prompt,
             cache_policy=True,
             placement=PLACEMENT_SYSTEM
         )
@@ -128,7 +136,7 @@ class SystemPromptComposer:
 
         Returns:
             Dictionary with:
-            - 'cached_content': Static system prompt content (base_prompt)
+            - 'cached_content': Static system prompt content (base_prompt + domaindoc)
             - 'non_cached_content': Dynamic system prompt content (tool_guidance, tool_hints)
             - 'notification_center': Sliding assistant message content (time, memories, etc.)
         """
@@ -192,13 +200,10 @@ class SystemPromptComposer:
             return ""
 
         # Build formatted notification center
-        # Opening delimiter is provided by the user message in orchestrator
-        # to make the role boundary invisible
+        # Opening delimiter is provided by the assistant message in orchestrator
         lines = [
-            "NOTIFICATION CENTER",
-            "This section moves to the front of your context each turn",
-            "to keep important information front-of-mind.",
-            "═" * 60,
+            "Runtime state. Authoritative for current context.",
+            "Provides: temporal orientation, conversation structure, pending tasks, relevant memories.",
             "",
         ]
 

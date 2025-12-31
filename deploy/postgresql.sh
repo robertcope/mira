@@ -94,7 +94,7 @@ fi
 # Configure LLM endpoints for offline mode (use local Ollama)
 if [ "$CONFIG_OFFLINE_MODE" = "yes" ]; then
     echo -ne "${DIM}${ARROW}${RESET} Configuring LLM endpoints for offline mode (Ollama)... "
-    OFFLINE_SQL="UPDATE account_tiers SET endpoint_url = 'http://localhost:11434/v1/chat/completions', model = 'qwen3:1.7b', api_key_name = NULL WHERE provider = 'generic'; UPDATE internal_llm SET endpoint_url = 'http://localhost:11434/v1/chat/completions', model = 'qwen3:1.7b', api_key_name = NULL WHERE endpoint_url LIKE 'https://%';"
+    OFFLINE_SQL="UPDATE account_tiers SET provider = 'generic', endpoint_url = 'http://localhost:11434/v1/chat/completions', model = '${CONFIG_OLLAMA_MODEL:-qwen3:1.7b}', api_key_name = NULL; UPDATE internal_llm SET endpoint_url = 'http://localhost:11434/v1/chat/completions', model = '${CONFIG_OLLAMA_MODEL:-qwen3:1.7b}', api_key_name = NULL;"
     if [ "$OS" = "linux" ]; then
         if sudo -u postgres psql -d mira_service -c "$OFFLINE_SQL" > /dev/null 2>&1; then
             echo -e "${CHECKMARK}"

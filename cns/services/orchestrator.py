@@ -18,7 +18,7 @@ from cns.core.events import (
 from clients.llm_provider import LLMProvider, ContextOverflowError
 from clients.hybrid_embeddings_provider import get_hybrid_embeddings_provider
 from cns.services.overflow_logger import get_overflow_logger
-from utils.tag_parser import TagParser
+from utils.tag_parser import TagParser, match_memory_id
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +80,6 @@ class ContinuumOrchestrator:
         self._cached_content = None
         self._non_cached_content = None
         self._notification_center = None
-
-        # In-memory token tracking for context overflow detection
-        # Tracks actual input tokens from previous turn for accurate estimation
-        self._last_turn_usage: Dict[str, int] = {}  # {continuum_id: input_tokens}
-        # One-shot context trim from async LLM judgment (future extension)
-        self._pending_context_trim: Dict[str, int] = {}  # {continuum_id: trim_index}
 
         # In-memory token tracking for context overflow detection
         # Tracks actual input tokens from previous turn for accurate estimation
@@ -280,9 +274,7 @@ class ContinuumOrchestrator:
             })
 
         # Build complete message array with notification center injection
-        # Structure: SYSTEM -> CONVERSATION [cached] -> delimiter -> NOTIFICATION CENTER -> CURRENT USER
-        # The delimiter user message provides the opening frame for the notification center,
-        # making the role boundary invisible - it all reads as one cohesive infrastructure block
+        # Structure: SYSTEM -> CONVERSATION [cached] -> NOTIFICATION CENTER -> CURRENT USER
         if notification_center and messages:
             # Separate current user message from conversation history
             # The current user message was just added to continuum, so it's the last message
@@ -292,26 +284,16 @@ class ContinuumOrchestrator:
             complete_messages = [
                 {"role": "system", "content": system_blocks},
                 *history_messages,
-                {"role": "user", "content": "═" * 60},
-                {"role": "assistant", "content": notification_center},
+                {"role": "assistant", "content": "═══════════════════════════ HUD ════════════════════════════\n" + notification_center},
                 current_user_msg,
             ]
             logger.debug(
                 f"Injected notification center: {len(history_messages)} history msgs + "
-                f"delimiter + notification center ({len(notification_center)} chars)"
+                f"notification center ({len(notification_center)} chars)"
             )
         else:
             # No notification center or no messages - use original structure
             complete_messages = [{"role": "system", "content": system_blocks}] + messages
-
-        # Initialize messages for LLM (may be modified by overflow remediation)
-        messages_for_llm = complete_messages
-
-        # Check for one-shot adjustment from previous async LLM judgment
-        one_shot_trim = self._pending_context_trim.pop(str(continuum.id), None)
-        if one_shot_trim:
-            logger.info(f"Applying one-shot trim from async LLM judgment: {one_shot_trim} messages")
-            messages_for_llm = messages_for_llm[:1] + messages_for_llm[one_shot_trim + 1:]
 
         # Initialize messages for LLM (may be modified by overflow remediation)
         messages_for_llm = complete_messages
@@ -411,7 +393,8 @@ class ContinuumOrchestrator:
                 ):
                     from cns.core.stream_events import (
                         TextEvent, ThinkingEvent, CompleteEvent,
-                        ToolExecutingEvent, ToolCompletedEvent, ToolErrorEvent
+                        ToolExecutingEvent, ToolCompletedEvent, ToolErrorEvent,
+                        CircuitBreakerEvent
                     )
 
                     # Detect invokeother_tool execution for auto-continuation
@@ -471,6 +454,13 @@ class ContinuumOrchestrator:
                                 stream_callback({"type": "thinking", "content": event.content})
                         elif hasattr(event, 'tool_name'):
                             stream_callback({"type": "tool_event", "event": event.type, "tool": event.tool_name})
+                        elif isinstance(event, CircuitBreakerEvent):
+                            # Send model error notification for tool validation failures
+                            if "failed after correction" in event.reason:
+                                stream_callback({
+                                    "type": "model_error",
+                                    "reason": event.reason
+                                })
 
                     # Store events for websocket
                     events.append(event)
@@ -535,7 +525,25 @@ class ContinuumOrchestrator:
         logger.info(f"Emotion extracted: {parsed_tags.get('emotion')}")
         logger.info(f"Emotion tag in clean_text: {'<mira:my_emotion>' in clean_response_text}")
 
-        # Handle tool-only responses (empty text but tools were used)
+        # Check if model tool error caused a blank response - provide user-friendly fallback
+        from cns.core.stream_events import CircuitBreakerEvent
+        model_tool_error = next(
+            (e for e in events if isinstance(e, CircuitBreakerEvent)
+             and "failed after correction" in e.reason),
+            None
+        )
+        if model_tool_error and (not clean_response_text or not clean_response_text.strip()):
+            logger.warning(f"Model returned blank after tool error: {model_tool_error.reason}")
+            clean_response_text = (
+                "I encountered an issue with this request. The AI model made an invalid "
+                "tool call that couldn't be corrected. This is a limitation of the model, "
+                "not MIRA. Please try rephrasing your request."
+            )
+            metadata["model_error"] = True
+            metadata["model_error_reason"] = str(model_tool_error.reason)
+
+        # Add final assistant response to continuum FIRST (before topic change handling)
+        # Validate response is not blank before saving
         if not clean_response_text or not clean_response_text.strip():
             if tool_calls:
                 # Tool-only response - use checkmark as minimal feedback
@@ -546,8 +554,18 @@ class ContinuumOrchestrator:
                 logger.error("Attempted to save blank assistant response with no tool usage - rejecting")
                 raise ValueError("Assistant response cannot be blank or empty. This may indicate an API error.")
 
+        # Resolve short memory IDs (8-char) to full UUIDs using surfaced memories
+        # LLM outputs mem_XXXXXXXX format, tag parser extracts 8-char portion
+        short_refs = parsed_tags.get('referenced_memories', [])
+        resolved_refs = []
+        for short_id in short_refs:
+            for mem in surfaced_memories:
+                if match_memory_id(short_id, mem['id']):
+                    resolved_refs.append(mem['id'])
+                    break
+
         assistant_metadata = {
-            "referenced_memories": parsed_tags.get('referenced_memories', []),
+            "referenced_memories": resolved_refs,
             "surfaced_memories": [m['id'] for m in surfaced_memories],
             "pinned_memory_ids": list(pinned_ids)  # 8-char IDs for importance boost
         }
@@ -579,7 +597,7 @@ class ContinuumOrchestrator:
         final_response = clean_response_text
         
         # Update metadata with referenced memories and pinned IDs
-        metadata["referenced_memories"] = parsed_tags.get('referenced_memories', [])
+        metadata["referenced_memories"] = resolved_refs
         metadata["surfaced_memories"] = [m['id'] for m in surfaced_memories]
         metadata["pinned_memory_ids"] = list(pinned_ids)  # 8-char IDs for importance boost
 
@@ -678,13 +696,6 @@ class ContinuumOrchestrator:
             return trinket.get_cached_memories()
         return []
 
-    @staticmethod
-    def _shorten_id(memory_id: str) -> str:
-        """Shorten UUID to 8-char hex prefix for matching."""
-        if not memory_id:
-            return ""
-        return memory_id.replace('-', '')[:8].lower()
-
     def _apply_retention(
         self,
         previous_memories: List[Dict[str, Any]],
@@ -708,8 +719,7 @@ class ContinuumOrchestrator:
         pinned = []
         for memory in previous_memories:
             memory_id = memory.get('id', '')
-            short_id = ContinuumOrchestrator._shorten_id(memory_id)
-            if short_id and short_id in pinned_ids:
+            if memory_id and any(match_memory_id(memory_id, pid) for pid in pinned_ids):
                 pinned.append(memory)
 
         logger.debug(
