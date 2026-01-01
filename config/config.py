@@ -160,7 +160,7 @@ class DomainKnowledgeConfig(BaseModel):
 class SystemConfig(BaseModel):
     """System-level configuration settings."""
 
-    log_level: str = Field(default="WARNING", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     timezone: str = Field(default="America/Chicago", description="Default timezone for date/time operations (must be a valid IANA timezone name like 'America/New_York', 'Europe/London')")
     streaming: bool = Field(default=True, description="Whether to stream responses from the API")
     json_indent: int = Field(default=2, description="Indentation level for JSON output")
