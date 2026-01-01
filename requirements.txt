@@ -63,6 +63,7 @@ Pillow>=10.0.0   # Image compression - two-tier compression for multimodal messa
 pydantic         # Data validation - widely used across API models and tools
 python-dateutil  # Date parsing - reminder_tool.py, timezone_utils.py
 pytz             # Timezone handling - timezone_utils.py
+parsedatetime    # Natural language date parsing - time_tool.py for relative date expressions
 colorama         # Terminal colors - colored_logging.py (already in requirements.txt)
 rich             # Rich text and TUI components - talkto_mira.py CLI interface
 rapidfuzz        # Fuzzy string matching - memory deduplication, entity normalization
