@@ -327,7 +327,7 @@ def format_relative_time(dt: datetime, reference_time: Optional[datetime] = None
     Uses fine-grained granularity:
     - < 60 seconds: "just now"
     - < 60 minutes: "X minute(s) ago"
-    - < 24 hours: "X hour(s) ago"
+    - < 24 hours: "X hour(s) Y minute(s) ago" (shows minutes for accuracy)
     - < 7 days: "X day(s) ago"
     - < 30 days: "X week(s) ago"
     - < 365 days: "X month(s) ago"
@@ -364,6 +364,7 @@ def format_relative_time(dt: datetime, reference_time: Optional[datetime] = None
     seconds = int(total_seconds)
     minutes = seconds // 60
     hours = minutes // 60
+    remaining_minutes = minutes % 60
     days = delta.days
     weeks = days // 7
     months = days // 30  # Approximate
@@ -376,8 +377,12 @@ def format_relative_time(dt: datetime, reference_time: Optional[datetime] = None
         unit = "minute" if minutes == 1 else "minutes"
         time_str = f"{minutes} {unit}"
     elif hours < 24:
-        unit = "hour" if hours == 1 else "hours"
-        time_str = f"{hours} {unit}"
+        hour_unit = "hour" if hours == 1 else "hours"
+        if remaining_minutes > 0:
+            minute_unit = "minute" if remaining_minutes == 1 else "minutes"
+            time_str = f"{hours} {hour_unit} {remaining_minutes} {minute_unit}"
+        else:
+            time_str = f"{hours} {hour_unit}"
     elif days < 7:
         unit = "day" if days == 1 else "days"
         time_str = f"{days} {unit}"
