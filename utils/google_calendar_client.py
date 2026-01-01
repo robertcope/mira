@@ -22,7 +22,7 @@ GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 # Safety flag: when True, update_event and delete_event are disabled
 # Set to False when you trust MIRA with calendar modifications
-READONLY_MODE = True
+READONLY_MODE = False
 
 
 class GoogleCalendarClient:

@@ -104,6 +104,9 @@ class GoogleCalendarTool(Tool):
     - All datetimes should be in ISO 8601 format with timezone
     - Use "primary" for the user's main calendar
     - Event IDs can be found in get_events response
+
+    IMPORTANT: 
+    - The only calendar that create_event, update_event, and delete_event should be run against is the "Mira" calendar.
     """
 
     description = simple_description + implementation_details
