@@ -15,6 +15,8 @@ Reference: https://developers.google.com/workspace/chat/verify-requests-from-cha
 """
 import base64
 import logging
+import threading
+import contextvars
 from typing import Dict, Any, Optional, List, Union
 
 from fastapi import APIRouter, Request, HTTPException
@@ -43,6 +45,11 @@ from cns.infrastructure.continuum_pool import get_continuum_pool
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Google Chat webhook timeout
+# Google Chat requires webhook responses within 30 seconds
+# We set threshold at 25s to provide safety margin for response transmission
+WEBHOOK_TIMEOUT_THRESHOLD_SECONDS = 25
 
 # Image validation constants
 # Pre-compression size limit - images are resized to 1200px for inference, so large
@@ -398,6 +405,153 @@ class GoogleChatHandler(BaseHandler):
             pass
 
 
+def _process_message_with_timeout_protection(
+    handler: GoogleChatHandler,
+    user_id: str,
+    message_text: str,
+    event_data: Dict[str, Any],
+    request: Request,
+    request_start_time,
+) -> Dict[str, Any]:
+    """
+    Process message with webhook timeout protection.
+
+    Google Chat webhooks timeout after 30 seconds. If processing exceeds 25 seconds,
+    we return an acknowledgment and continue processing in background, then push
+    the final response via Google Chat API.
+
+    Args:
+        handler: GoogleChatHandler instance
+        user_id: MIRA user ID
+        message_text: Message text to process
+        event_data: Full Google Chat event payload
+        request: FastAPI request object
+        request_start_time: Timestamp when webhook request started
+
+    Returns:
+        Google Chat Card response (either final response or acknowledgment)
+    """
+    # Extract space info for push notifications
+    space_info = event_data.get("space", {})
+    space_name = space_info.get("name")
+    space_type = space_info.get("type", "DM")
+
+    message_info = event_data.get("message", {})
+    thread_info = message_info.get("thread", {})
+    thread_key = thread_info.get("name")
+
+    # In DM spaces, don't specify thread - Google Chat manages threading automatically
+    # Only use thread_key for SPACE/ROOM types where explicit threading is supported
+    if space_type == "DM":
+        thread_key = None
+
+    # Start a result container that the background thread can populate
+    result_container = {"response": None, "completed": False}
+
+    # Capture context before spawning thread
+    ctx = contextvars.copy_context()
+
+    def process_in_thread():
+        """Execute processing and store result."""
+        try:
+            # Run processing within captured context
+            def _process():
+                response = handler.process_message_event(
+                    user_id=user_id,
+                    message_text=message_text,
+                    event_data=event_data,
+                    request=request
+                )
+                result_container["response"] = response
+                result_container["completed"] = True
+
+            # Execute in context to preserve user_id and other contextvars
+            ctx.run(_process)
+        except Exception as e:
+            logger.error(f"[Google Chat] Processing thread failed: {e}", exc_info=True)
+            result_container["error"] = e
+            result_container["completed"] = True
+
+    # Start processing in background thread
+    process_thread = threading.Thread(
+        target=process_in_thread,
+        daemon=True
+    )
+    process_thread.start()
+
+    # Wait for completion or timeout
+    timeout_remaining = WEBHOOK_TIMEOUT_THRESHOLD_SECONDS - (utc_now() - request_start_time).total_seconds()
+    process_thread.join(timeout=max(0, timeout_remaining))
+
+    # Check if processing completed within timeout
+    if result_container["completed"]:
+        if "error" in result_container:
+            raise result_container["error"]
+
+        elapsed = (utc_now() - request_start_time).total_seconds()
+        logger.info(f"[Google Chat] Synchronous response completed in {elapsed:.1f}s")
+        return result_container["response"]
+
+    # Timeout approaching - return acknowledgment and continue in background
+    logger.info(
+        f"[Google Chat] Webhook timeout approaching ({WEBHOOK_TIMEOUT_THRESHOLD_SECONDS}s), "
+        f"returning acknowledgment and continuing in background"
+    )
+
+    def background_completion():
+        """Wait for processing to complete then send the full response."""
+        try:
+            # Wait for processing thread to complete
+            process_thread.join()
+
+            if "error" in result_container:
+                raise result_container["error"]
+
+            # Send the full response via Google Chat API
+            # In DMs: Will appear as next message in conversation (natural threading)
+            # In rooms: Will appear in the thread specified by thread_key
+            from utils.google_chat_client import get_google_chat_client
+
+            chat_client = get_google_chat_client()
+            chat_client.send_card_message(
+                space_name=space_name,
+                card_json=result_container["response"],
+                thread_key=thread_key
+            )
+
+            logger.info(f"[Google Chat] Background response sent to space {space_name}")
+
+        except Exception as e:
+            logger.error(f"[Google Chat] Background completion failed: {e}", exc_info=True)
+
+            # Try to send error notification
+            try:
+                from utils.google_chat_client import get_google_chat_client
+
+                chat_client = get_google_chat_client()
+                error_card = format_error_as_card(
+                    "PROCESSING_ERROR",
+                    "Failed to complete your request. Please try again."
+                )
+                chat_client.send_card_message(
+                    space_name=space_name,
+                    card_json=error_card,
+                    thread_key=thread_key
+                )
+            except Exception as push_error:
+                logger.error(f"[Google Chat] Failed to send error notification: {push_error}", exc_info=True)
+
+    background_thread = threading.Thread(
+        target=background_completion,
+        daemon=True
+    )
+    background_thread.start()
+
+    # Return acknowledgment to keep webhook alive
+    # Google Chat will automatically thread this response correctly
+    return format_simple_text("⏳ Working on your request...")
+
+
 @router.post("/google-chat")
 async def google_chat_webhook(request: Request):
     """
@@ -462,22 +616,24 @@ async def google_chat_webhook(request: Request):
                     status_code=500
                 )
 
-            # Process message through MIRA (run synchronously in thread pool)
+            # Process message with timeout protection
             from anyio import to_thread
             from functools import partial
             handler = GoogleChatHandler()
             response_card = await to_thread.run_sync(
                 partial(
-                    handler.process_message_event,
+                    _process_message_with_timeout_protection,
+                    handler=handler,
                     user_id=user_id,
                     message_text=message_text,
                     event_data=event_data,
-                    request=request
+                    request=request,
+                    request_start_time=request_start
                 )
             )
 
             elapsed_ms = int((utc_now() - request_start).total_seconds() * 1000)
-            logger.info(f"[Google Chat] Message processed in {elapsed_ms}ms, sending Card response")
+            logger.info(f"[Google Chat] Chat App message processed in {elapsed_ms}ms, sending response")
 
             return JSONResponse(content=response_card, media_type="application/json")
 
@@ -527,17 +683,19 @@ async def google_chat_webhook(request: Request):
                     status_code=500
                 )
 
-            # Process message through MIRA (run synchronously in thread pool)
+            # Process message with timeout protection
             from anyio import to_thread
             from functools import partial
             handler = GoogleChatHandler()
             response_card = await to_thread.run_sync(
                 partial(
-                    handler.process_message_event,
+                    _process_message_with_timeout_protection,
+                    handler=handler,
                     user_id=user_id,
                     message_text=message_text,
                     event_data=event_data,
-                    request=request
+                    request=request,
+                    request_start_time=request_start
                 )
             )
 

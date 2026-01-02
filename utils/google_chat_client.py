@@ -77,7 +77,9 @@ class GoogleChatClient:
         Args:
             space_name: Space identifier (e.g., 'spaces/AAAAxxxxxxx')
             text: Message text to send
-            thread_key: Optional thread key to reply in existing thread
+            thread_key: Optional thread key/name to reply in existing thread
+                       Can be either a full resource name (spaces/.../threads/...)
+                       or a custom threadKey
 
         Returns:
             API response with message details
@@ -93,10 +95,15 @@ class GoogleChatClient:
                 'text': text
             }
 
-            # Add thread key if provided (keeps conversation in same thread)
+            # Add thread if provided
             request_body = message_body
             if thread_key:
-                request_body['thread'] = {'threadKey': thread_key}
+                # If thread_key is a full resource name (starts with spaces/),
+                # use thread.name, otherwise use thread.threadKey
+                if thread_key.startswith('spaces/'):
+                    request_body['thread'] = {'name': thread_key}
+                else:
+                    request_body['thread'] = {'threadKey': thread_key}
 
             # Send message via API
             result = self._service.spaces().messages().create(
@@ -104,7 +111,7 @@ class GoogleChatClient:
                 body=request_body
             ).execute()
 
-            logger.info(f"Message sent to space {space_name}")
+            logger.info(f"Message sent to space {space_name} (thread: {thread_key or 'none'})")
             return result
 
         except HttpError as e:
@@ -130,7 +137,9 @@ class GoogleChatClient:
         Args:
             space_name: Space identifier (e.g., 'spaces/AAAAxxxxxxx')
             card_json: Card message JSON (formatted by google_chat_formatter)
-            thread_key: Optional thread key to reply in existing thread
+            thread_key: Optional thread key/name to reply in existing thread
+                       Can be either a full resource name (spaces/.../threads/...)
+                       or a custom threadKey
 
         Returns:
             API response with message details
@@ -144,17 +153,23 @@ class GoogleChatClient:
         try:
             request_body = card_json.copy()
 
-            # Add thread key if provided
+            # Add thread if provided
             if thread_key:
-                request_body['thread'] = {'threadKey': thread_key}
+                # If thread_key is a full resource name (starts with spaces/),
+                # use thread.name, otherwise use thread.threadKey
+                if thread_key.startswith('spaces/'):
+                    request_body['thread'] = {'name': thread_key}
+                else:
+                    request_body['thread'] = {'threadKey': thread_key}
 
             # Send card message via API
+            logger.debug(f"Sending card message: parent={space_name}, body={request_body}")
             result = self._service.spaces().messages().create(
                 parent=space_name,
                 body=request_body
             ).execute()
 
-            logger.info(f"Card message sent to space {space_name}")
+            logger.info(f"Card message sent to space {space_name} (thread: {thread_key or 'none'}), result: {result.get('name', 'unknown')}")
             return result
 
         except HttpError as e:
@@ -166,6 +181,52 @@ class GoogleChatClient:
             logger.error(f"Error sending card to {space_name}: {e}", exc_info=True)
             raise RuntimeError(
                 f"Failed to send card message to Google Chat space {space_name}: {e}"
+            ) from e
+
+    def update_message(
+        self,
+        message_name: str,
+        card_json: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Update an existing message in Google Chat.
+
+        Args:
+            message_name: Full message resource name (e.g., 'spaces/.../messages/...')
+            card_json: Updated card message JSON
+
+        Returns:
+            API response with updated message details
+
+        Raises:
+            RuntimeError: If message update fails (infrastructure failure)
+        """
+        if not self._service:
+            raise RuntimeError("Google Chat API service not initialized")
+
+        try:
+            request_body = card_json.copy()
+
+            # Update message via API
+            logger.debug(f"Updating message: name={message_name}")
+            result = self._service.spaces().messages().update(
+                name=message_name,
+                updateMask='cardsV2',
+                body=request_body
+            ).execute()
+
+            logger.info(f"Message updated: {message_name}")
+            return result
+
+        except HttpError as e:
+            logger.error(f"HTTP error updating message {message_name}: {e}", exc_info=True)
+            raise RuntimeError(
+                f"Failed to update Google Chat message {message_name}: {e}"
+            ) from e
+        except Exception as e:
+            logger.error(f"Error updating message {message_name}: {e}", exc_info=True)
+            raise RuntimeError(
+                f"Failed to update Google Chat message {message_name}: {e}"
             ) from e
 
 
