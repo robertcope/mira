@@ -341,46 +341,64 @@ class ToolRepository:
             # Dependency injection: check constructor signature for known types
             dependencies = {}
             sig = inspect.signature(tool_class.__init__)
-            
+
             for param_name, param in sig.parameters.items():
-                if param_name != 'self' and param.default is inspect.Parameter.empty:
-                    param_type = param.annotation
+                if param_name == 'self':
+                    continue
 
-                    # Resolve forward references and Optional[...] annotations
-                    annotation_name = None
-                    if isinstance(param_type, str):
-                        annotation_name = param_type
-                    else:
-                        annotation_name = getattr(param_type, '__name__', None)
+                param_type = param.annotation
 
-                        if annotation_name is None:
-                            origin = get_origin(param_type)
-                            if origin is Union:
-                                args = [arg for arg in get_args(param_type) if arg is not type(None)]
-                                if args:
-                                    candidate = args[0]
-                                    if isinstance(candidate, str):
-                                        annotation_name = candidate
-                                    else:
-                                        annotation_name = getattr(candidate, '__name__', None)
+                # Skip parameters with no annotation
+                if param_type is inspect.Parameter.empty:
+                    continue
 
-                    # Inject known dependency types
-                    if annotation_name in ('LLMBridge', 'LLMProvider'):
-                        from clients.llm_provider import LLMProvider
-                        dependencies[param_name] = LLMProvider()
-                    elif annotation_name == 'ToolRepository':
-                        dependencies[param_name] = self
-                    elif annotation_name == 'WorkingMemory':
-                        if self.working_memory is not None:
-                            dependencies[param_name] = self.working_memory
+                # Resolve forward references and Optional[...] annotations
+                annotation_name = None
+                if isinstance(param_type, str):
+                    annotation_name = param_type
+                    self.logger.debug(f"Parameter {param_name}: forward reference string '{annotation_name}'")
+                else:
+                    annotation_name = getattr(param_type, '__name__', None)
+
+                    if annotation_name is None:
+                        origin = get_origin(param_type)
+                        if origin is Union:
+                            args = [arg for arg in get_args(param_type) if arg is not type(None)]
+                            if args:
+                                candidate = args[0]
+                                if isinstance(candidate, str):
+                                    annotation_name = candidate
+                                    self.logger.debug(f"Parameter {param_name}: extracted '{annotation_name}' from Optional['{annotation_name}']")
+                                else:
+                                    annotation_name = getattr(candidate, '__name__', None)
+                                    self.logger.debug(f"Parameter {param_name}: extracted type {annotation_name} from Optional")
+                            else:
+                                self.logger.warning(f"Parameter {param_name}: Union type has no non-None args")
                         else:
-                            self.logger.debug(
-                                "Tool %s requested WorkingMemory dependency but repository has none",
-                                name
-                            )
-            
+                            self.logger.warning(f"Parameter {param_name}: annotation has no __name__ and is not Union (origin={origin})")
+                    else:
+                        self.logger.debug(f"Parameter {param_name}: direct type {annotation_name}")
+
+                # Inject known dependency types (even if parameter has default value)
+                if annotation_name in ('LLMBridge', 'LLMProvider'):
+                    from clients.llm_provider import LLMProvider
+                    dependencies[param_name] = LLMProvider()
+                    self.logger.debug(f"Injecting LLMProvider for {name}.{param_name}")
+                elif annotation_name == 'ToolRepository':
+                    dependencies[param_name] = self
+                    self.logger.debug(f"Injecting ToolRepository for {name}.{param_name}")
+                elif annotation_name == 'WorkingMemory':
+                    if self.working_memory is not None:
+                        dependencies[param_name] = self.working_memory
+                        self.logger.info(f"Injecting WorkingMemory for {name}.{param_name}")
+                    else:
+                        self.logger.warning(
+                            f"Tool {name} requested WorkingMemory for parameter '{param_name}' "
+                            f"but repository has working_memory=None"
+                        )
+
             tool_instance = tool_class(**dependencies)
-            self.logger.debug(f"Instantiated tool: {name}")
+            self.logger.info(f"Instantiated {name} with dependencies: {list(dependencies.keys())}")
             return tool_instance
             
         except Exception as e:

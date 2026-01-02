@@ -89,22 +89,10 @@ def initialize_all_scheduled_tasks(scheduler_service):
         logger.error(f"Error registering LT_Memory scheduled tasks: {e}", exc_info=True)
         raise RuntimeError(f"Failed to register LT_Memory scheduled tasks: {e}") from e
 
-    # Register Google Chat notification job
-    try:
-        from utils.google_chat_notifier import register_notification_job
+    # Google Chat notification job - registered separately (needs event_bus for search notifications)
+    # See register_google_chat_job() below
 
-        if not register_notification_job(scheduler_service):
-            raise RuntimeError("Google Chat notification job registration returned False")
-
-        logger.info("Successfully registered Google Chat notification job")
-        successful += 1
-
-    except Exception as e:
-        # Google Chat notifications are optional - don't fail if not configured
-        logger.warning(f"Google Chat notifications not registered (optional): {e}")
-        # Don't increment successful, but don't raise either
-
-    total_services = len(SCHEDULED_TASK_MODULES) + 2  # +1 for lt_memory, +1 for google_chat (optional)
+    total_services = len(SCHEDULED_TASK_MODULES) + 1  # +1 for lt_memory
     logger.info(f"Scheduled task initialization complete: {successful}/{total_services} services registered")
     return successful
 
@@ -136,3 +124,33 @@ def register_segment_timeout_job(scheduler_service, event_bus) -> bool:
     except Exception as e:
         logger.error(f"Error registering segment timeout job: {e}", exc_info=True)
         raise RuntimeError(f"Failed to register segment timeout job: {e}") from e
+
+
+def register_google_chat_job(scheduler_service, event_bus) -> bool:
+    """
+    Register Google Chat notification job (called separately after event_bus initialization).
+
+    Args:
+        scheduler_service: System scheduler service
+        event_bus: CNS event bus for subscribing to search completion events
+
+    Returns:
+        True if registered successfully (or False if Google Chat not configured)
+
+    Raises:
+        RuntimeError: If job registration fails unexpectedly
+    """
+    try:
+        from utils.google_chat_notifier import register_notification_job
+
+        success = register_notification_job(scheduler_service, event_bus)
+        if not success:
+            raise RuntimeError("Google Chat notification job registration returned False")
+
+        logger.info("Successfully registered Google Chat notification job")
+        return True
+
+    except Exception as e:
+        # Google Chat notifications are optional - don't fail if not configured
+        logger.warning(f"Google Chat notifications not registered (optional): {e}")
+        return False

@@ -20,11 +20,18 @@ class GoogleChatNotifier:
     """
     Service for sending proactive Google Chat notifications.
 
-    Checks for due reminders and sends push notifications to users.
+    Handles:
+    - Due reminder notifications (periodic check)
+    - Background search completion notifications (event-driven)
     """
 
-    def __init__(self):
-        """Initialize the notifier service."""
+    def __init__(self, event_bus=None):
+        """
+        Initialize the notifier service.
+
+        Args:
+            event_bus: Optional event bus for subscribing to search completion events
+        """
         # Lazy imports to avoid circular dependencies
         from clients.postgres_client import PostgresClient
         from utils.google_chat_spaces_repository import GoogleChatSpacesRepository
@@ -32,6 +39,11 @@ class GoogleChatNotifier:
         self.chat_client = None
         self.spaces_repo = GoogleChatSpacesRepository()
         self.db = PostgresClient('mira_service')
+        self.event_bus = event_bus
+
+        # Subscribe to search completion events if event bus provided
+        if self.event_bus:
+            self.event_bus.subscribe('UpdateTrinketEvent', self._handle_search_completion)
 
     def _ensure_chat_client(self):
         """Lazily initialize Google Chat client (may not be configured)."""
@@ -41,6 +53,120 @@ class GoogleChatNotifier:
             except RuntimeError as e:
                 logger.warning(f"Google Chat client not available: {e}")
                 self.chat_client = False  # Mark as unavailable
+
+    def _handle_search_completion(self, event):
+        """
+        Handle UpdateTrinketEvent for search completions.
+
+        Filters for GetContextTrinket updates and sends Google Chat notifications
+        for all completion statuses (success, timeout, failure).
+
+        Args:
+            event: UpdateTrinketEvent from the event bus
+        """
+        # Only handle GetContextTrinket updates
+        if event.target_trinket != 'GetContextTrinket':
+            return
+
+        context = event.context
+        status = context.get('status')
+        task_id = context.get('task_id', 'unknown')
+
+        # Only handle completion events (skip 'pending' status)
+        if status not in ('success', 'timeout', 'failed'):
+            logger.debug(f"Ignoring non-completion status '{status}' for task {task_id[:8] if len(task_id) > 8 else task_id}")
+            return
+
+        logger.info(f"Received search completion event: task_id={task_id[:8] if len(task_id) > 8 else task_id}, status={status}")
+
+        try:
+            self._notify_search_completion(
+                user_id=event.user_id,
+                continuum_id=event.continuum_id,
+                status=status,
+                context=context
+            )
+        except Exception as e:
+            # Log but don't raise - search completion notifications are non-critical
+            logger.error(f"Error sending search completion notification: {e}", exc_info=True)
+
+    def _notify_search_completion(
+        self,
+        user_id: str,
+        continuum_id: str,
+        status: str,
+        context: Dict[str, Any]
+    ):
+        """
+        Send Google Chat notification for search completion.
+
+        Args:
+            user_id: User ID who initiated the search
+            continuum_id: Continuum ID where search was initiated
+            status: Completion status ('success', 'timeout', 'failed')
+            context: Event context with search details
+        """
+        self._ensure_chat_client()
+
+        # If Google Chat not configured, skip silently
+        if self.chat_client is False:
+            logger.info("Google Chat not configured, skipping search completion notification")
+            return
+
+        # Get user's Google Chat space
+        space_info = self.spaces_repo.get_space_for_user(user_id)
+
+        if not space_info:
+            logger.info(f"User {user_id} has no Google Chat space configured, skipping notification")
+            return
+
+        # Format notification message based on status
+        message = self._format_search_notification(status, context)
+
+        # Send message via Google Chat API
+        try:
+            self.chat_client.send_message(
+                space_name=space_info['space_name'],
+                text=message,
+                thread_key=space_info.get('thread_key')
+            )
+            logger.info(f"Sent search completion notification to user {user_id} (status: {status})")
+        except Exception as e:
+            logger.error(f"Error sending Google Chat message: {e}", exc_info=True)
+            raise
+
+    def _format_search_notification(
+        self,
+        status: str,
+        context: Dict[str, Any]
+    ) -> str:
+        """
+        Format brief search completion notification message.
+
+        Args:
+            status: Completion status ('success', 'timeout', 'failed')
+            context: Event context with search details
+
+        Returns:
+            Formatted notification text
+        """
+        query = context.get('query', 'Unknown query')
+
+        if status == 'success':
+            summary = context.get('summary', {})
+            findings_count = len(summary.get('findings', []))
+            return f"✓ Search complete: \"{query}\" - Found {findings_count} relevant items"
+
+        elif status == 'timeout':
+            findings_count = context.get('findings_count', 0)
+            iteration = context.get('iteration', 0)
+            return f"⏱ Search timeout: \"{query}\" - Stopped after {iteration} iterations with {findings_count} findings"
+
+        elif status == 'failed':
+            error_type = context.get('error_type', 'Unknown error')
+            return f"✗ Search failed: \"{query}\" - {error_type}"
+
+        return f"Search update: \"{query}\" - Status: {status}"
 
     def check_and_notify_reminders(self):
         """
@@ -269,20 +395,29 @@ class GoogleChatNotifier:
 _google_chat_notifier = None
 
 
-def get_google_chat_notifier() -> GoogleChatNotifier:
-    """Get or create global GoogleChatNotifier instance."""
+def get_google_chat_notifier(event_bus=None) -> GoogleChatNotifier:
+    """
+    Get or create global GoogleChatNotifier instance.
+
+    Args:
+        event_bus: Optional event bus for event subscriptions (only used on first init)
+
+    Returns:
+        GoogleChatNotifier instance
+    """
     global _google_chat_notifier
     if _google_chat_notifier is None:
-        _google_chat_notifier = GoogleChatNotifier()
+        _google_chat_notifier = GoogleChatNotifier(event_bus=event_bus)
     return _google_chat_notifier
 
 
-def register_notification_job(scheduler_service) -> bool:
+def register_notification_job(scheduler_service, event_bus=None) -> bool:
     """
     Register Google Chat notification job with scheduler.
 
     Args:
         scheduler_service: System scheduler service
+        event_bus: Optional event bus for search completion notifications
 
     Returns:
         True if registered successfully
@@ -291,7 +426,8 @@ def register_notification_job(scheduler_service) -> bool:
         RuntimeError: If job registration fails
     """
     try:
-        notifier = get_google_chat_notifier()
+        # Initialize notifier with event bus (enables search completion notifications)
+        notifier = get_google_chat_notifier(event_bus=event_bus)
 
         # Check every minute for due reminders
         trigger = IntervalTrigger(minutes=1)
@@ -306,6 +442,8 @@ def register_notification_job(scheduler_service) -> bool:
         )
 
         logger.info("Registered Google Chat reminder notification job")
+        if event_bus:
+            logger.info("Enabled Google Chat notifications for background search completions")
         return True
 
     except Exception as e:

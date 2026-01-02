@@ -467,8 +467,8 @@ class GetContextTool(Tool):
     }
 
     def __init__(self,
-                 tool_repo: Optional['ToolRepository'] = None,
-                 working_memory: Optional['WorkingMemory'] = None):
+                 tool_repo: 'ToolRepository',
+                 working_memory: 'WorkingMemory'):
         """Initialize with dependency injection for tool interoperability."""
         super().__init__()
         self.logger = logging.getLogger(__name__)
@@ -711,8 +711,13 @@ class GetContextTool(Tool):
                                 summary: Dict[str, Any]) -> None:
         """Publish successful search results to trinket."""
         if self.event_bus is None:
+            self.logger.warning(
+                f"Cannot publish search completion event for task {task_id[:8]}: "
+                f"event_bus is None (working_memory={'available' if self.working_memory else 'None'})"
+            )
             return
         from cns.core.events import UpdateTrinketEvent
+        self.logger.info(f"Publishing search success event for task {task_id[:8]}")
         self.event_bus.publish(UpdateTrinketEvent.create(
             continuum_id=continuum_id,
             target_trinket='GetContextTrinket',
@@ -728,8 +733,10 @@ class GetContextTool(Tool):
                                 search_mode: str, findings_count: int) -> None:
         """Publish timeout notification to trinket."""
         if self.event_bus is None:
+            self.logger.warning(f"Cannot publish search timeout event for task {task_id[:8]}: event_bus is None")
             return
         from cns.core.events import UpdateTrinketEvent
+        self.logger.info(f"Publishing search timeout event for task {task_id[:8]}")
         self.event_bus.publish(UpdateTrinketEvent.create(
             continuum_id=continuum_id,
             target_trinket='GetContextTrinket',
@@ -748,8 +755,10 @@ class GetContextTool(Tool):
                                 query: str, error: str, error_type: str) -> None:
         """Publish failure notification to trinket."""
         if self.event_bus is None:
+            self.logger.warning(f"Cannot publish search failure event for task {task_id[:8]}: event_bus is None")
             return
         from cns.core.events import UpdateTrinketEvent
+        self.logger.info(f"Publishing search failure event for task {task_id[:8]}")
         self.event_bus.publish(UpdateTrinketEvent.create(
             continuum_id=continuum_id,
             target_trinket='GetContextTrinket',

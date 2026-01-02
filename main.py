@@ -266,8 +266,11 @@ async def lifespan(app: FastAPI):
     initialize_all_scheduled_tasks(scheduler_service)
 
     # Register segment timeout detection job (needs event_bus from orchestrator)
-    from utils.scheduled_tasks import register_segment_timeout_job
+    from utils.scheduled_tasks import register_segment_timeout_job, register_google_chat_job
     register_segment_timeout_job(scheduler_service, orchestrator.event_bus)
+
+    # Register Google Chat notification job with event bus (enables search completion notifications)
+    register_google_chat_job(scheduler_service, orchestrator.event_bus)
 
     scheduler_service.start()
 

@@ -321,6 +321,8 @@ class ContinuumOrchestrator:
         tier_name = get_thread_tier(continuum.user_id)
         tier_config = resolve_tier(tier_name)
 
+        logger.info(f"Using tier '{tier_name}' for continuum {continuum.id} (user {continuum.user_id})")
+
         llm_kwargs['model_preference'] = tier_config.model
         if tier_config.thinking_budget == 0:
             llm_kwargs['thinking_enabled'] = False
