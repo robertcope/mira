@@ -43,7 +43,35 @@ CORE PRINCIPLES:
 
    Semantic anchor test: "Does this memory contain concrete nouns that would match future queries?"
 
-4. **Handle Partial Information**
+4. **Preserve Specific Data That Cannot Be Reconstructed**
+   Critical: Some information, once lost, cannot be recovered through reasoning or search. Extract these verbatim when mentioned:
+
+   - **Names**: Full names of people, organizations, places, projects, products - never abbreviate or genericize
+   - **Dates and times**: Exact dates ("March 15th, 2025"), times ("3:30pm"), deadlines - not "next month" or "soon"
+   - **Tracking identifiers**: FedEx/UPS/USPS tracking numbers, order IDs, confirmation codes
+   - **Part numbers and model numbers**: Product SKUs, component part numbers, equipment model designations
+   - **Physical addresses**: Complete mailing addresses, delivery locations, property addresses
+   - **Account identifiers**: Usernames, account numbers, customer IDs (exclude passwords/keys)
+   - **Serial numbers and unique identifiers**: Equipment serial numbers, license plates, device IDs
+   - **Specific measurements with units**: "750ml", "3.5 inches", "127.3 mg/dL", "192.168.1.1"
+   - **Exact URLs and file paths**: Full paths when discussing specific resources
+   - **Phone numbers and reference numbers**: Contact numbers, case numbers, ticket IDs
+
+   ✅ GOOD: "Meeting with Sarah Chen from Acme Corp on March 15th, 2025 at 3:30pm"
+   ❌ BAD: "Has a meeting next month"
+
+   ✅ GOOD: "FedEx tracking number 1Z999AA10123456784 for laptop replacement"
+   ❌ BAD: "Has a FedEx tracking number for laptop replacement"
+
+   ✅ GOOD: "Ordered part number MB-2847-REV3 for water pump replacement"
+   ❌ BAD: "Ordered a replacement part for water pump"
+
+   ✅ GOOD: "Shipping address: 742 Evergreen Terrace, Springfield, IL 62701"
+   ❌ BAD: "Has a shipping address in Springfield"
+
+   Test: "If I need this specific piece of information in 3 months, could I reconstruct it from a vague summary?" If no, extract it verbatim.
+
+5. **Handle Partial Information**
    - If stated facts are incomplete, extract what IS stated without filling gaps
    - Don't wait for complete information - extract available specifics
    - If uncertain whether something was stated or implied, omit it
