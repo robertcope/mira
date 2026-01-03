@@ -869,7 +869,7 @@ class ContinuumOrchestrator:
                 for m in content_messages[i:i + window_size]
             )
             # Use fast embeddings for drift detection
-            embedding = self.embeddings_provider.embed_query(window_text)
+            embedding = self.embeddings_provider.encode_realtime(window_text)
             windows.append((i, embedding))
 
         # Find candidate cut points (similarity drops)
@@ -954,7 +954,7 @@ class ContinuumOrchestrator:
                 str(m.get('content', ''))[:500]
                 for m in content_messages[i:i + window_size]
             )
-            embedding = self.embeddings_provider.embed_query(window_text)
+            embedding = self.embeddings_provider.encode_realtime(window_text)
             windows.append((i, embedding))
 
         # Find candidate cut points
