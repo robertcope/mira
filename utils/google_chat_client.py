@@ -106,10 +106,18 @@ class GoogleChatClient:
                     request_body['thread'] = {'threadKey': thread_key}
 
             # Send message via API
-            result = self._service.spaces().messages().create(
-                parent=space_name,
-                body=request_body
-            ).execute()
+            # CRITICAL: Must set messageReplyOption or the API ignores the thread field!
+            if thread_key:
+                result = self._service.spaces().messages().create(
+                    parent=space_name,
+                    body=request_body,
+                    messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                ).execute()
+            else:
+                result = self._service.spaces().messages().create(
+                    parent=space_name,
+                    body=request_body
+                ).execute()
 
             logger.info(f"Message sent to space {space_name} (thread: {thread_key or 'none'})")
             return result
@@ -163,11 +171,24 @@ class GoogleChatClient:
                     request_body['thread'] = {'threadKey': thread_key}
 
             # Send card message via API
-            logger.debug(f"Sending card message: parent={space_name}, body={request_body}")
-            result = self._service.spaces().messages().create(
-                parent=space_name,
-                body=request_body
-            ).execute()
+            # CRITICAL: Must set messageReplyOption or the API ignores the thread field!
+            # Default is MESSAGE_REPLY_OPTION_UNSPECIFIED which starts a new thread.
+            logger.info(f"[Google Chat API] Sending card message: parent={space_name}, thread_in_body={request_body.get('thread')}")
+            logger.debug(f"[Google Chat API] Full request body: {request_body}")
+
+            # Build API request with messageReplyOption query parameter when threading
+            if thread_key:
+                # This tells the API to actually use the thread field in the body
+                result = self._service.spaces().messages().create(
+                    parent=space_name,
+                    body=request_body,
+                    messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                ).execute()
+            else:
+                result = self._service.spaces().messages().create(
+                    parent=space_name,
+                    body=request_body
+                ).execute()
 
             logger.info(f"Card message sent to space {space_name} (thread: {thread_key or 'none'}), result: {result.get('name', 'unknown')}")
             return result

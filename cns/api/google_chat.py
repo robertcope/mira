@@ -436,14 +436,18 @@ def _process_message_with_timeout_protection(
     space_name = space_info.get("name")
     space_type = space_info.get("type", "DM")
 
-    message_info = event_data.get("message", {})
+    # Extract thread info - handle both Chat App format and legacy webhook format
+    if "chat" in event_data:
+        # Chat App format: thread is in chat.messagePayload.message.thread
+        message_info = event_data.get("chat", {}).get("messagePayload", {}).get("message", {})
+    else:
+        # Legacy webhook format: thread is in message.thread
+        message_info = event_data.get("message", {})
+
     thread_info = message_info.get("thread", {})
     thread_key = thread_info.get("name")
 
-    # In DM spaces, don't specify thread - Google Chat manages threading automatically
-    # Only use thread_key for SPACE/ROOM types where explicit threading is supported
-    if space_type == "DM":
-        thread_key = None
+    logger.info(f"[Google Chat] Extracted thread_key for async response: {thread_key}")
 
     # Start a result container that the background thread can populate
     result_container = {"response": None, "completed": False}
@@ -508,10 +512,10 @@ def _process_message_with_timeout_protection(
                 raise result_container["error"]
 
             # Send the full response via Google Chat API
-            # In DMs: Will appear as next message in conversation (natural threading)
-            # In rooms: Will appear in the thread specified by thread_key
+            # Will appear in the thread specified by thread_key (both DMs and rooms support threading)
             from utils.google_chat_client import get_google_chat_client
 
+            logger.info(f"[Google Chat] Sending background response to space={space_name}, thread_key={thread_key}")
             chat_client = get_google_chat_client()
             chat_client.send_card_message(
                 space_name=space_name,
@@ -519,7 +523,7 @@ def _process_message_with_timeout_protection(
                 thread_key=thread_key
             )
 
-            logger.info(f"[Google Chat] Background response sent to space {space_name}")
+            logger.info(f"[Google Chat] Background response sent to space {space_name}, thread {thread_key}")
 
         except Exception as e:
             logger.error(f"[Google Chat] Background completion failed: {e}", exc_info=True)
