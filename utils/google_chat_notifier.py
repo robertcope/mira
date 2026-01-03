@@ -307,10 +307,11 @@ class GoogleChatNotifier:
             message = self._format_reminder_notification(reminders, timezone)
 
             # Send message via Google Chat API
+            # NOTE: Reminders always go to root chat (no thread_key) so they're visible in main space
             self.chat_client.send_message(
                 space_name=space_info['space_name'],
                 text=message,
-                thread_key=space_info.get('thread_key')
+                thread_key=None
             )
 
             logger.info(f"Sent {len(reminders)} reminder notification(s) to user {user_id}")
