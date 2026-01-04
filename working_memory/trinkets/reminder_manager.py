@@ -63,24 +63,37 @@ class ReminderManager(EventAwareTrinket):
             category="internal"
         )
 
+        # Get location-based reminders
+        location_result = reminder_tool.run(
+            operation="get_reminders",
+            date_type="location",
+            category="all"
+        )
+
         # Collect reminders, keeping overdue and today separate
         user_overdue = self._collect_reminders([overdue_result])
         user_today = self._collect_reminders([today_result])
         internal_overdue_list = self._collect_reminders([internal_overdue])
         internal_today_list = self._collect_reminders([internal_today])
+        location_reminders = self._collect_reminders([location_result])
 
-        if not user_overdue and not user_today and not internal_overdue_list and not internal_today_list:
+        if not user_overdue and not user_today and not internal_overdue_list and not internal_today_list and not location_reminders:
             logger.debug("No active reminders")
             return ""  # Legitimately empty - user has no reminders set
 
         # Format reminder content with separate overdue/today sections
         reminder_info = self._format_reminders(
             user_overdue, user_today,
-            internal_overdue_list, internal_today_list
+            internal_overdue_list, internal_today_list,
+            location_reminders
         )
         total_user = len(user_overdue) + len(user_today)
         total_internal = len(internal_overdue_list) + len(internal_today_list)
-        logger.debug(f"Generated reminder info with {total_user} user ({len(user_overdue)} overdue) and {total_internal} internal ({len(internal_overdue_list)} overdue) reminders")
+        logger.debug(
+            f"Generated reminder info with {total_user} user ({len(user_overdue)} overdue), "
+            f"{total_internal} internal ({len(internal_overdue_list)} overdue), "
+            f"and {len(location_reminders)} location-based reminders"
+        )
         return reminder_info
     
     def _collect_reminders(self, results: List[Dict]) -> List[Dict]:
@@ -98,13 +111,15 @@ class ReminderManager(EventAwareTrinket):
         user_overdue: List[Dict],
         user_today: List[Dict],
         internal_overdue: List[Dict],
-        internal_today: List[Dict]
+        internal_today: List[Dict],
+        location_reminders: List[Dict]
     ) -> str:
         """
         Format reminders as XML with urgent overdue section and relative time.
 
         Overdue reminders are displayed with urgency indicators.
         Today's reminders use hybrid format with both relative and absolute time.
+        Location-based reminders are shown separately with place information.
         """
         from utils.timezone_utils import format_relative_time, utc_now
 
@@ -181,6 +196,30 @@ class ReminderManager(EventAwareTrinket):
                 parts.append("</today>")
 
             parts.append("</internal_reminders>")
+
+        # LOCATION-BASED REMINDERS SECTION
+        if location_reminders:
+            parts.append("<location_reminders>")
+            parts.append("<instruction>These reminders trigger when you arrive at specific locations. They are monitored passively via location tracking.</instruction>")
+
+            for reminder in location_reminders:
+                place_name = reminder.get("encrypted__place_name", "unknown location")
+                radius = reminder.get("trigger_radius_meters", 100)
+
+                attrs = [
+                    f'id="{reminder["id"]}"',
+                    f'title="{reminder["encrypted__title"]}"',
+                    f'place="{place_name}"',
+                    f'radius="{radius}m"'
+                ]
+
+                if reminder.get('encrypted__description'):
+                    parts.append(f"<location_reminder {' '.join(attrs)}>\n<details>{reminder['encrypted__description']}</details>\n</location_reminder>")
+                else:
+                    parts.append(f"<location_reminder {' '.join(attrs)}/>")
+
+            parts.append("<guidance>Inform the user about location-based reminders if they ask about active reminders or if relevant to conversation.</guidance>")
+            parts.append("</location_reminders>")
 
         parts.append("</active_reminders>")
         return "\n".join(parts)

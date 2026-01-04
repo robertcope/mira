@@ -50,25 +50,32 @@ class ReminderTool(Tool):
 
     anthropic_schema = {
         "name": "reminder_tool",
-        "description": """Manages scheduled reminders with contact integration.
+        "description": """Manages scheduled and location-based reminders with contact integration.
 
 OPERATIONS (use exactly one):
 
 • add_reminder - Create a new reminder
-  Required: title, date
-  Optional: description, contact_name, category, additional_notes
+  Required: title
+  For TIME-BASED: date (ISO 8601 format)
+  For LOCATION-BASED: location_name (e.g., "ALARA", "home", "office")
+  Optional: description, contact_name, category, additional_notes, trigger_radius_meters
+  NOTE: Provide either 'date' OR 'location_name', not both. Location reminders trigger when user arrives at the specified location.
 
 • get_reminders - Query reminders by date
-  Required: date_type (today|tomorrow|upcoming|past|all|date|range|overdue)
+  Required: date_type (today|tomorrow|upcoming|past|all|date|range|overdue|location)
   If date_type='date': also requires specific_date
   If date_type='range': also requires start_date, end_date
+  If date_type='location': returns all location-based reminders
+
+• get_current_location - Get user's current location from location tracking
+  No parameters required. Returns latitude, longitude, accuracy, timestamp if available (within last 30 minutes).
 
 • mark_completed - Mark ONE reminder as done
   Required: reminder_id (single string like 'rem_a1b2c3d4')
 
 • update_reminder - Modify an existing reminder
   Required: reminder_id
-  Optional: title, date, description, contact_name, additional_notes
+  Optional: title, date, description, contact_name, additional_notes, location_name
 
 • delete_reminder - Delete ONE reminder
   Required: reminder_id
@@ -82,8 +89,8 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["add_reminder", "get_reminders", "mark_completed", "update_reminder", "delete_reminder", "snooze_reminder", "batch"],
-                        "description": "The operation to perform. MUST be exactly one of: add_reminder, get_reminders, mark_completed, update_reminder, delete_reminder, snooze_reminder, batch. Do NOT abbreviate (e.g., use 'update_reminder' not 'update')."
+                        "enum": ["add_reminder", "get_reminders", "get_current_location", "mark_completed", "update_reminder", "delete_reminder", "snooze_reminder", "batch"],
+                        "description": "The operation to perform. MUST be exactly one of: add_reminder, get_reminders, get_current_location, mark_completed, update_reminder, delete_reminder, snooze_reminder, batch. Do NOT abbreviate (e.g., use 'update_reminder' not 'update')."
                     },
                     "title": {
                         "type": "string",
@@ -91,7 +98,15 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                     },
                     "date": {
                         "type": "string",
-                        "description": "When the reminder should occur in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Example: 2025-09-14T14:30:00. Time zone will be interpreted as user's local time. (required for add_reminder, optional for update_reminder)"
+                        "description": "When the reminder should occur in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Example: 2025-09-14T14:30:00. Time zone will be interpreted as user's local time. Use for time-based reminders. (optional for add_reminder - use 'date' OR 'location_name', not both)"
+                    },
+                    "location_name": {
+                        "type": "string",
+                        "description": "Name of location for location-based reminder (e.g., 'ALARA', 'home', 'office'). Will be geocoded to coordinates. Use for location-based reminders. (optional for add_reminder - use 'date' OR 'location_name', not both)"
+                    },
+                    "trigger_radius_meters": {
+                        "type": "integer",
+                        "description": "Radius in meters for location trigger (default: 100 meters). Only used for location-based reminders."
                     },
                     "description": {
                         "type": "string",
@@ -121,8 +136,8 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                     },
                     "date_type": {
                         "type": "string",
-                        "enum": ["today", "tomorrow", "upcoming", "past", "all", "date", "range", "overdue"],
-                        "description": "REQUIRED for get_reminders operation. Type of date query: 'today' for today's reminders, 'tomorrow' for tomorrow's, 'upcoming' for all future reminders, 'overdue' for past-due incomplete reminders, 'past' for all past reminders, 'all' for everything, 'date' for a specific date (requires specific_date), 'range' for a date range (requires start_date and end_date)"
+                        "enum": ["today", "tomorrow", "upcoming", "past", "all", "date", "range", "overdue", "location"],
+                        "description": "REQUIRED for get_reminders operation. Type of date query: 'today' for today's reminders, 'tomorrow' for tomorrow's, 'upcoming' for all future reminders, 'overdue' for past-due incomplete reminders, 'past' for all past reminders, 'all' for everything, 'date' for a specific date (requires specific_date), 'range' for a date range (requires start_date and end_date), 'location' for all location-based reminders"
                     },
                     "specific_date": {
                         "type": "string",
@@ -176,7 +191,14 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
             contact_uuid TEXT,
             encrypted__additional_notes TEXT,
             category TEXT DEFAULT 'user',
-            notified_at TEXT
+            notified_at TEXT,
+            location_trigger INTEGER DEFAULT 0,
+            encrypted__place_name TEXT,
+            place_id TEXT,
+            coordinates_lat REAL,
+            coordinates_lng REAL,
+            trigger_radius_meters INTEGER DEFAULT 100,
+            last_triggered_at TEXT
         """
         self.db.create_table('reminders', schema)
 
@@ -185,13 +207,30 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_completed ON reminders(completed)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_contact ON reminders(contact_uuid)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_category ON reminders(category)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_location_trigger ON reminders(location_trigger)")
 
-        # Add notified_at column to existing tables (safe migration)
-        try:
-            self.db.execute("ALTER TABLE reminders ADD COLUMN notified_at TEXT")
-        except Exception:
-            # Column already exists, which is fine
-            pass
+        # Safe migrations for new columns
+        migrations = [
+            "ALTER TABLE reminders ADD COLUMN notified_at TEXT",
+            "ALTER TABLE reminders ADD COLUMN location_trigger INTEGER DEFAULT 0",
+            "ALTER TABLE reminders ADD COLUMN encrypted__place_name TEXT",
+            "ALTER TABLE reminders ADD COLUMN place_id TEXT",
+            "ALTER TABLE reminders ADD COLUMN coordinates_lat REAL",
+            "ALTER TABLE reminders ADD COLUMN coordinates_lng REAL",
+            "ALTER TABLE reminders ADD COLUMN trigger_radius_meters INTEGER DEFAULT 100",
+            "ALTER TABLE reminders ADD COLUMN last_triggered_at TEXT"
+        ]
+
+        for migration in migrations:
+            try:
+                self.db.execute(migration)
+                self.logger.debug(f"Successfully executed migration: {migration[:50]}...")
+            except Exception as e:
+                # Column already exists, which is fine
+                # Only log if it's NOT a "duplicate column" error
+                error_msg = str(e).lower()
+                if "duplicate" not in error_msg and "already exists" not in error_msg:
+                    self.logger.warning(f"Migration failed (non-duplicate): {migration[:50]}... Error: {e}")
 
     def _load_reminders(self, include_completed: bool = False) -> List[Dict[str, Any]]:
         """Load reminders from SQLite database."""
@@ -287,6 +326,8 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 return self._add_reminder(**kwargs)
             elif operation == "get_reminders":
                 return self._get_reminders(**kwargs)
+            elif operation == "get_current_location":
+                return self._get_current_location(**kwargs)
             elif operation == "mark_completed":
                 return self._mark_completed(**kwargs)
             elif operation == "update_reminder":
@@ -301,7 +342,7 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 self.logger.error(f"Unknown operation: {operation}")
                 raise ValueError(
                     f"Unknown operation: {operation}. Valid operations are: "
-                    "add_reminder, get_reminders, mark_completed, "
+                    "add_reminder, get_reminders, get_current_location, mark_completed, "
                     "update_reminder, delete_reminder, snooze_reminder, batch"
                 )
         except Exception as e:
@@ -311,55 +352,56 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
     def _add_reminder(
         self,
         title: str,
-        date: str,
+        date: Optional[str] = None,
+        location_name: Optional[str] = None,
+        trigger_radius_meters: int = 100,
         description: Optional[str] = None,
         contact_name: Optional[str] = None,
         additional_notes: Optional[str] = None,
         category: str = "user",
     ) -> Dict[str, Any]:
         """
-        Add a new reminder with optional contact linkage.
-        
+        Add a new reminder (time-based or location-based).
+
         Args:
             title: Brief title or subject of the reminder
-            date: When the reminder should occur (can be natural language like
-                "tomorrow" or "in 3 weeks")
+            date: When the reminder should occur (for time-based reminders)
+            location_name: Location name for location-based reminders (e.g., "ALARA")
+            trigger_radius_meters: Radius in meters for location trigger (default: 100)
             description: Detailed description of the reminder
             contact_name: Name of the contact to link with this reminder
             additional_notes: Any additional information to store with the reminder
             category: Category of reminder ('user' or 'internal', default 'user')
-            
+
         Returns:
             Dict containing the created reminder
-            
+
         Raises:
-            ValueError: If required fields are missing or date parsing fails
+            ValueError: If required fields are missing or validation fails
         """
-        
+
         # Validate required parameters
         if not title:
             self.logger.error("Title is required for adding a reminder")
             raise ValueError("Title is required for adding a reminder")
-            
-        if not date:
-            self.logger.error("Date is required for adding a reminder")
-            raise ValueError("Date is required for adding a reminder")
-            
+
+        # Must provide either date or location_name, not both
+        if not date and not location_name:
+            self.logger.error("Either 'date' or 'location_name' is required")
+            raise ValueError("Either 'date' (for time-based) or 'location_name' (for location-based) is required")
+
+        if date and location_name:
+            self.logger.error("Cannot specify both 'date' and 'location_name'")
+            raise ValueError("Provide either 'date' OR 'location_name', not both")
+
         # Validate category
         if category not in ["user", "internal"]:
             self.logger.error(f"Invalid category '{category}'. Must be 'user' or 'internal'")
             raise ValueError(f"Invalid category '{category}'. Must be 'user' or 'internal'")
-            
-        # Parse the date from natural language
-        try:
-            reminder_date = self._parse_date(date)
-        except Exception as e:
-            self.logger.error(f"Failed to parse date '{date}': {str(e)}")
-            raise ValueError(f"Failed to parse date '{date}': {str(e)}")
-            
+
         # Generate a unique ID for the reminder
         reminder_id = f"rem_{uuid.uuid4().hex[:8]}"
-        
+
         # Check if contact name exists in user's contacts
         contact_info = None
         contact_uuid = None
@@ -367,47 +409,92 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
             contact_info = self._lookup_contact(contact_name)
             if contact_info:
                 contact_uuid = contact_info["contact"]["id"]
-            
-        # Create the reminder object
+
+        # Base reminder object
         reminder = {
             "id": reminder_id,
             "encrypted__title": title,
             "encrypted__description": description,
-            "reminder_date": format_utc_iso(reminder_date),
             "created_at": format_utc_iso(utc_now()),
             "updated_at": format_utc_iso(utc_now()),
             "completed": 0,
             "completed_at": None,
             "contact_uuid": contact_uuid,
             "encrypted__additional_notes": additional_notes,
-            "category": category
+            "category": category,
+            "location_trigger": 0,
+            "encrypted__place_name": None,
+            "place_id": None,
+            "coordinates_lat": None,
+            "coordinates_lng": None,
+            "trigger_radius_meters": trigger_radius_meters,
+            "last_triggered_at": None
         }
-        
+
+        message_parts = []
+
+        # Handle time-based reminder
+        if date:
+            try:
+                reminder_date = self._parse_date(date)
+            except Exception as e:
+                self.logger.error(f"Failed to parse date '{date}': {str(e)}")
+                raise ValueError(f"Failed to parse date '{date}': {str(e)}")
+
+            reminder["reminder_date"] = format_utc_iso(reminder_date)
+
+            # Convert reminder time to user's local timezone for the message
+            user_tz = get_user_preferences().timezone
+            local_reminder_time = convert_from_utc(reminder_date, user_tz)
+            formatted_local_time = format_datetime(local_reminder_time, 'date_time', include_timezone=True)
+            message_parts.append(f"Time-based reminder added for {formatted_local_time}")
+
+        # Handle location-based reminder
+        else:  # location_name is set
+            # Geocode the location using maps_tool
+            location_data = self._resolve_location(location_name)
+
+            if not location_data:
+                self.logger.error(f"Failed to resolve location: {location_name}")
+                raise ValueError(f"Could not find location '{location_name}'. Please provide a more specific location name.")
+
+            reminder["location_trigger"] = 1
+            reminder["encrypted__place_name"] = location_name
+            reminder["place_id"] = location_data.get("place_id")
+            reminder["coordinates_lat"] = location_data["lat"]
+            reminder["coordinates_lng"] = location_data["lng"]
+            # Use a far-future date for location-based reminders (not date-triggered)
+            reminder["reminder_date"] = "2099-12-31T23:59:59Z"
+
+            message_parts.append(
+                f"Location-based reminder created for '{location_name}' "
+                f"({location_data.get('formatted_address', 'address unknown')}) "
+                f"with {trigger_radius_meters}m radius"
+            )
+
         # Save reminder
         self._save_reminder(reminder)
-            
-        # Prepare response with contact details if linked
+
+        # Prepare response
         response_reminder = self._format_reminder_for_display(reminder)
-        
-        # Convert reminder time to user's local timezone for the message
-        user_tz = get_user_preferences().timezone
-        local_reminder_time = convert_from_utc(reminder_date, user_tz)
-        formatted_local_time = format_datetime(local_reminder_time, 'date_time', include_timezone=True)
-        
+
         result = {
             "reminder": response_reminder,
-            "message": f"Reminder added for {formatted_local_time}"
+            "message": ". ".join(message_parts)
         }
-        
+
         # Add contact details to response if found
         if contact_info:
             result["contact_found"] = True
             result["contact_info"] = contact_info.get("contact", {})
-            result["message"] += f" linked to contact {contact_name}"
+            result["message"] += f". Linked to contact {contact_name}"
         elif contact_name:
             result["contact_found"] = False
-            result["message"] += f". No contact record found for {contact_name}."
-            
+            result["message"] += f". No contact record found for {contact_name}"
+
+        if location_name:
+            result["location_data"] = location_data
+
         return result
 
     def _get_reminders(
@@ -437,7 +524,7 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
         """
         
         # Validate date_type
-        valid_date_types = ["today", "tomorrow", "upcoming", "past", "all", "date", "range", "overdue"]
+        valid_date_types = ["today", "tomorrow", "upcoming", "past", "all", "date", "range", "overdue", "location"]
         if date_type not in valid_date_types:
             self.logger.error(f"Invalid date_type: {date_type}. Must be one of {valid_date_types}")
             raise ValueError(f"Invalid date_type: {date_type}. Must be one of {valid_date_types}")
@@ -528,7 +615,7 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 if not start_date or not end_date:
                     self.logger.error("start_date and end_date are required when date_type is 'range'")
                     raise ValueError("start_date and end_date are required when date_type is 'range'")
-                
+
                 try:
                     # Use our timezone-aware date parser for both dates
                     parsed_start = self._parse_date(start_date)
@@ -541,7 +628,12 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 except Exception as e:
                     self.logger.error(f"Failed to parse date range: {str(e)}")
                     raise ValueError(f"Failed to parse date range: {str(e)}")
-        
+
+        # Handle location-based reminder query (separate logic, no date parsing)
+        if date_type == "location":
+            filtered_reminders = [r for r in reminders if r.get("location_trigger") == 1 and not r.get("completed", False)]
+            date_description = "location-based"
+
         # Sort by reminder date
         filtered_reminders.sort(key=lambda r: r["reminder_date"])
         
@@ -554,6 +646,48 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
             "date_type": date_type,
             "message": f"Found {len(reminder_list)} reminder(s) {date_description}"
         }
+
+    def _get_current_location(self) -> Dict[str, Any]:
+        """
+        Get user's current location from Valkey location tracking.
+
+        Returns:
+            Dict containing current location data if available (within last 30 minutes)
+
+        Raises:
+            ValueError: If location data is not available
+        """
+        from cns.services.location_reminder_service import get_user_current_location
+        from utils.user_context import get_current_user_id
+
+        user_id = get_current_user_id()
+
+        try:
+            location_data = get_user_current_location(user_id)
+
+            if not location_data:
+                return {
+                    "available": False,
+                    "message": "No recent location data available. Location data expires after 24 hours of inactivity."
+                }
+
+            return {
+                "available": True,
+                "latitude": location_data.get("lat"),
+                "longitude": location_data.get("lng"),
+                "accuracy_meters": location_data.get("accuracy"),
+                "timestamp": location_data.get("timestamp"),
+                "updated_at": location_data.get("updated_at"),
+                "ttl_seconds": location_data.get("ttl_seconds"),
+                "message": f"Current location: {location_data['lat']:.6f}, {location_data['lng']:.6f} (accuracy: {location_data.get('accuracy', 'unknown')}m)"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve current location: {e}")
+            return {
+                "available": False,
+                "message": f"Failed to retrieve location: {str(e)}"
+            }
 
     def _get_reminder_not_found_error(self, reminder_id: str) -> str:
         """
@@ -959,9 +1093,16 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
             "completed_at": format_dt(reminder.get("completed_at")),
             "notified_at": format_dt(reminder.get("notified_at")),
             "encrypted__additional_notes": reminder.get("encrypted__additional_notes"),
-            "category": reminder.get("category", "user")
+            "category": reminder.get("category", "user"),
+            "location_trigger": bool(reminder.get("location_trigger", 0)),
+            "encrypted__place_name": reminder.get("encrypted__place_name"),
+            "place_id": reminder.get("place_id"),
+            "coordinates_lat": reminder.get("coordinates_lat"),
+            "coordinates_lng": reminder.get("coordinates_lng"),
+            "trigger_radius_meters": reminder.get("trigger_radius_meters", 100),
+            "last_triggered_at": format_dt(reminder.get("last_triggered_at"))
         }
-        
+
         # Add contact information if linked
         if reminder.get("contact_uuid"):
             contact = self._get_contact_by_uuid(reminder["contact_uuid"])
@@ -970,7 +1111,7 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                 formatted["contact_encrypted__email"] = contact.get("encrypted__email")
                 formatted["contact_encrypted__phone"] = contact.get("encrypted__phone")
                 formatted["contact_uuid"] = contact["id"]
-        
+
         return formatted
 
     def _parse_date(self, date_str: str) -> datetime:
@@ -1042,16 +1183,16 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
     def _lookup_contact(self, name: str) -> Optional[Dict[str, Any]]:
         """
         Lookup a contact by name in the user's contacts.
-        
+
         Args:
             name: Contact name to search for
-            
+
         Returns:
             Dict with contact info or None if not found
         """
         try:
             contacts = self._load_contacts()
-            
+
             # Search for contact by name (case-insensitive)
             name_lower = name.lower()
             for contact in contacts:
@@ -1061,9 +1202,43 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                         "contact": contact,
                         "matched_field": "name"
                     }
-            
+
             return None
-            
+
         except Exception as e:
             self.logger.error(f"Contact lookup failed for {name}: {e}")
+            return None
+
+    def _resolve_location(self, location_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a location name to coordinates using maps_tool.
+
+        Args:
+            location_name: Name of the location (e.g., "ALARA", "home", "123 Main St")
+
+        Returns:
+            Dict with lat, lng, place_id, formatted_address or None if not found
+        """
+        try:
+            from tools.implementations.maps_tool import MapsTool
+
+            maps_tool = MapsTool()
+            result = maps_tool.run(operation="geocode", query=location_name)
+
+            if result and result.get("results"):
+                # Use the first (most relevant) result
+                first_result = result["results"][0]
+                location = first_result.get("location", {})
+
+                return {
+                    "lat": location.get("lat"),
+                    "lng": location.get("lng"),
+                    "place_id": first_result.get("place_id"),
+                    "formatted_address": first_result.get("formatted_address")
+                }
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Location resolution failed for '{location_name}': {e}")
             return None
