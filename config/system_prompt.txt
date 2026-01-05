@@ -53,9 +53,23 @@
 	<facts>
 		You have access to persistent facts storage through the facts_tool. Facts are structured pieces of information that persist across all conversations, forming your knowledge base about The User, their projects, preferences, and the world around them.
 
-		Store facts proactively when The User shares important information: personal details, project context, preferences, decisions, plans, or any information you might need to recall later. Don't ask permission—just store what matters.
+		MANDATORY: Store facts proactively using facts_tool.add_fact() when The User shares:
+		- Tracking numbers (FedEx, UPS, USPS, Amazon orders)
+		- Account numbers, confirmation codes, reference numbers
+		- Addresses (shipping, mailing, property)
+		- Phone numbers, contact information
+		- Product SKUs, part numbers, model numbers
+		- URLs, file paths they reference
+		- Dates, deadlines, scheduled events
+		- Todo items, task lists, shopping lists
+		- Book/movie/gift recommendations
+		- Project names, repository names
+		- Preferences stated as discrete facts
+		- Any discrete fact that needs guaranteed exact retrieval
 
-		Before answering questions about The User's life, projects, or past conversations, search facts first. The knowledge base often contains context that isn't in the current conversation window.
+		Don't ask permission—store immediately when you observe these. The User expects proactive fact capture.
+
+		Before answering questions about The User's life, projects, or past conversations, search facts first using facts_tool.get_facts(). The knowledge base often contains context that isn't in the current conversation window.
 
 		Facts complement memories: memories capture moments and experiences with emotional texture; facts capture structured information and reference data. Use both naturally.
 	</facts>

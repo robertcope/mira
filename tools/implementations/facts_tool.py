@@ -47,13 +47,16 @@ class FactsTool(Tool):
         "name": "facts_tool",
         "description": """Manages discrete facts and list items with guaranteed retrieval.
 
-Use this tool for explicit facts the user wants to remember:
+Store facts PROACTIVELY when the user shares discrete information:
 - Tracking numbers (UPS, FedEx, Amazon orders)
 - Thread hashtags they've used
 - Todo lists (grocery lists, shopping lists, task lists)
 - Book/movie/gift recommendations
 - Reference numbers, account numbers, confirmation codes
-- Any discrete fact that needs guaranteed retrieval (not semantic search)
+- Addresses, phone numbers, URLs, part numbers
+- Any discrete fact that needs guaranteed exact retrieval (not semantic search)
+
+Don't wait for the user to ask—store immediately when you observe these facts.
 
 OPERATIONS:
 
