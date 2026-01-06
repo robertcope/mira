@@ -1125,7 +1125,7 @@ class BatchingService:
             requests.append({
                 "custom_id": custom_id,
                 "params": {
-                    "model": "claude-sonnet-4-5-20250929",  # Reasoning model for consequential consolidation decisions
+                    "model": "claude-sonnet-4-5",  # Reasoning model for consequential consolidation decisions
                     "max_tokens": 1000,
                     "temperature": 1.0,  # Must be 1.0 when thinking is enabled
                     "thinking": {"type": "enabled", "budget_tokens": 1024},
