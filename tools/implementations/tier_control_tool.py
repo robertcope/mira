@@ -33,9 +33,10 @@ class TierControlTool(Tool):
     Control LLM tier preferences for conversation quality and speed.
 
     This tool allows changing between different LLM tiers based on user needs:
-    - fast: Qwen3 32B via Groq - optimized for speed
-    - balanced: Kimi K2 via Groq - balance of speed and quality
-    - nuanced: Opus with extended thinking - maximum reasoning depth
+    - fast: claude-sonnet-4-5-20250929
+    - balanced: google/gemini-3-flash-preview
+    - nuanced: claude-opus-4-5-20251101
+    - advanced: google/gemini-3-pro-preview
     """
 
     name = "tier_control_tool"
@@ -48,12 +49,14 @@ class TierControlTool(Tool):
             "- Switch to faster responses (tier='fast')\n"
             "- Balance speed and quality (tier='balanced')\n"
             "- Get more thoughtful, nuanced reasoning (tier='nuanced')\n"
+            "- Access advanced capabilities (tier='advanced')\n"
             "- Check current tier setting (operation='get')\n"
             "\n"
             "Tier descriptions:\n"
-            "- fast: Qwen3 32B - Quick responses, best for rapid interactions\n"
-            "- balanced: Kimi K2 - Good balance of speed and reasoning quality (default)\n"
-            "- nuanced: Opus with extended thinking - Deep reasoning for complex problems\n"
+            "- fast: claude-sonnet-4-5-20250929 - Quick responses, best for rapid interactions\n"
+            "- balanced: google/gemini-3-flash-preview - Good balance of speed and reasoning quality (default)\n"
+            "- nuanced: claude-opus-4-5-20251101 - Deep reasoning for complex problems\n"
+            "- advanced: google/gemini-3-pro-preview - Advanced capabilities with Gemini 3 Pro\n"
             "\n"
             "The tier change applies immediately to subsequent messages."
         ),
@@ -71,12 +74,13 @@ class TierControlTool(Tool):
                 },
                 "tier": {
                     "type": "string",
-                    "enum": ["fast", "balanced", "nuanced"],
+                    "enum": ["fast", "balanced", "nuanced", "advanced"],
                     "description": (
                         "Tier to switch to (required for 'set' operation):\n"
                         "- fast: Quick responses with Qwen3 32B\n"
                         "- balanced: Balanced performance with Kimi K2\n"
-                        "- nuanced: Deep reasoning with Opus + extended thinking"
+                        "- nuanced: Deep reasoning with Opus + extended thinking\n"
+                        "- advanced: Advanced capabilities with Gemini 3 Pro"
                     )
                 }
             },
