@@ -47,7 +47,10 @@ class TimeTool(Tool):
             "Get the current date and time, or parse natural language date/time expressions. "
             "Use this tool when the user asks \"what time is it?\", \"what's the date?\", or when they "
             "reference dates like \"next Tuesday\", \"3 days from now\", \"August 25th\", \"eod\", etc. "
-            "Handles a wide range of natural language date/time formats. Returns dates in ISO format."
+            "Handles a wide range of natural language date/time formats. Returns dates in ISO format. "
+            "\n\n⚠️ CRITICAL: You MUST use this tool before creating reminders or calendar events with relative dates. "
+            "If the user says 'tomorrow at 3pm' or 'next week', use this tool's relative_date feature FIRST to determine "
+            "what that means in their timezone, then use the returned date information when calling reminder_tool or google_calendar_tool."
         ),
         "input_schema": {
             "type": "object",

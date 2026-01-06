@@ -78,6 +78,8 @@ class GoogleCalendarTool(Tool):
         calendar_id (optional, default="primary"): Target calendar
         all_day (optional, default=false): Whether this is an all-day event
 
+      ⚠️ TIMEZONE CRITICAL: When creating calendar events, you MUST use the time_tool to understand the current time and date in the user's timezone. If the user says "tomorrow at 2pm" or "next Tuesday at 10am", use time_tool to determine what those mean in their timezone, then construct ISO 8601 datetime strings accordingly. All datetime strings are interpreted in the user's local timezone.
+
     - update_event: Update an existing event
       Parameters:
         event_id (required): Event ID to update
@@ -105,7 +107,7 @@ class GoogleCalendarTool(Tool):
     - Use "primary" for the user's main calendar
     - Event IDs can be found in get_events response
 
-    IMPORTANT: 
+    IMPORTANT:
     - The only calendar that create_event, update_event, and delete_event should be run against is the "Mira" calendar.
     """
 
@@ -136,7 +138,7 @@ class GoogleCalendarTool(Tool):
                 },
                 "start": {
                     "type": "string",
-                    "description": "Start datetime in ISO 8601 format"
+                    "description": "Start datetime in ISO 8601 format. ⚠️ CRITICAL: Use time_tool first to determine 'tomorrow', 'next week' etc. in the user's timezone before constructing date strings."
                 },
                 "end": {
                     "type": "string",

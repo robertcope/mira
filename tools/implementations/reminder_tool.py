@@ -61,6 +61,8 @@ OPERATIONS (use exactly one):
   Optional: description, contact_name, category, additional_notes, trigger_radius_meters
   NOTE: Provide either 'date' OR 'location_name', not both. Location reminders trigger when user arrives at the specified location.
 
+  ⚠️ TIMEZONE CRITICAL: When creating time-based reminders, you MUST use the time_tool to understand the current time and date in the user's timezone. Date strings are interpreted in the user's local timezone, NOT UTC. If the user says "tomorrow at 3pm", use time_tool to determine what "tomorrow" means in their timezone, then provide the date string accordingly.
+
 • get_reminders - Query reminders by date
   Required: date_type (today|tomorrow|upcoming|past|all|date|range|overdue|location)
   If date_type='date': also requires specific_date
@@ -98,7 +100,7 @@ IMPORTANT: Use singular reminder_id for single operations. Use 'batch' operation
                     },
                     "date": {
                         "type": "string",
-                        "description": "When the reminder should occur in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Example: 2025-09-14T14:30:00. Time zone will be interpreted as user's local time. Use for time-based reminders. (optional for add_reminder - use 'date' OR 'location_name', not both)"
+                        "description": "When the reminder should occur in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Example: 2025-09-14T14:30:00. Time zone will be interpreted as user's local time. Use for time-based reminders. (optional for add_reminder - use 'date' OR 'location_name', not both). ⚠️ CRITICAL: Use time_tool first to understand 'today', 'tomorrow', 'next week' etc. in the user's timezone before constructing date strings."
                     },
                     "location_name": {
                         "type": "string",
