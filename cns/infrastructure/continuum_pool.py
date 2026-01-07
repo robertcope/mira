@@ -70,7 +70,11 @@ class UnitOfWork:
             )
 
             # Update Valkey cache once with current continuum state
-            self.pool.valkey_cache.set_continuum(self.continuum.messages)
+            # Get thread context from ambient contextvars
+            from utils.user_context import get_current_user
+            user_context = get_current_user()
+            thread_context = user_context.get('google_chat_thread_key') if user_context else None
+            self.pool.valkey_cache.set_continuum(self.continuum.messages, thread_context)
 
             logger.debug(f"Committed {len(self.pending_messages)} messages for continuum {self.continuum.id}")
 
@@ -118,47 +122,65 @@ class ContinuumPool:
         
     def get_or_create(self) -> Continuum:
         """
-        Get continuum from Valkey cache or create new one.
+        Get or create continuum, using thread context from ambient context.
 
-        Checks Valkey first - if not found, it's a new session.
+        Checks Valkey cache first - if not found, it's a new session.
         Uses ambient user context from set_current_user_id().
+        Thread context (if present) is read from user context for per-thread conversations.
 
         Returns:
             Continuum instance with appropriate cache
         """
         user_id = get_current_user_id()
 
+        # Get thread context from contextvars (set by Google Chat webhook)
+        from utils.user_context import get_current_user
+        user_context = get_current_user()
+        thread_context = user_context.get('google_chat_thread_key') if user_context else None
+
         with self._lock:
-            # Check Valkey cache first
-            cached_messages = self.valkey_cache.get_continuum()
+            # Check Valkey cache first (thread-aware key)
+            cached_messages = self.valkey_cache.get_continuum(thread_context)
 
-            # Get continuum structure from DB (must exist from signup)
-            continuum = self.repository.get_continuum(user_id)
-            if not continuum:
-                raise RuntimeError(f"Continuum not found for user {user_id}. Continuum should be created during signup.")
-
-            # No callback needed - using Unit of Work pattern
-
-            if cached_messages is None:
-                # NEW SESSION - continuum expired from Valkey
-                logger.info(f"New session detected for user {user_id} - loading with session boundary")
-
-                # Load session context (segment summaries + boundary)
-                messages = self.session_loader.load_session_cache(
-                    str(continuum.id), user_id
-                )
-                continuum.apply_cache(messages)
-
-                # Cache in Valkey for future requests
-                if messages:
-                    self.valkey_cache.set_continuum(messages)
-
-            else:
-                # CONTINUING SESSION - cache hit
-                logger.debug(f"Continuing session for user {user_id}")
-
-                # Apply cached messages to continuum
+            if cached_messages is not None:
+                # Cache hit - continuing session in this thread
+                continuum = self.repository.get_continuum(user_id, thread_context)
+                if not continuum:
+                    thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+                    raise RuntimeError(
+                        f"Cache hit but continuum not found for user {user_id}, {thread_desc}"
+                    )
                 continuum.apply_cache(cached_messages)
+                thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+                logger.debug(f"Continuing session for user {user_id}, {thread_desc}")
+                return continuum
+
+            # Cache miss - new session or first message in thread
+            continuum = self.repository.get_continuum(user_id, thread_context)
+
+            if not continuum:
+                # First message in this thread - create new continuum
+                thread_desc = f"thread '{thread_context}'" if thread_context else "default (no thread)"
+                logger.info(
+                    f"Creating new continuum for user {user_id}, {thread_desc}"
+                )
+                continuum = self.repository.create_continuum(
+                    user_id=user_id,
+                    thread_context=thread_context
+                )
+
+            # Load session cache with segment boundary if needed
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.info(f"New session detected for user {user_id}, {thread_desc} - loading with session boundary")
+
+            messages = self.session_loader.load_session_cache(
+                str(continuum.id), user_id
+            )
+            continuum.apply_cache(messages)
+
+            # Cache in Valkey for future requests
+            if messages:
+                self.valkey_cache.set_continuum(messages, thread_context)
 
             return continuum
     
@@ -210,7 +232,7 @@ class ContinuumPool:
     
     def invalidate(self) -> None:
         """
-        Remove continuum from Valkey cache.
+        Remove continuum from Valkey cache, using thread context from ambient context.
 
         Requires: Active user context (set via set_current_user_id during authentication)
 
@@ -218,14 +240,22 @@ class ContinuumPool:
             RuntimeError: If no user context is set
         """
         user_id = get_current_user_id()
-        if self.valkey_cache.invalidate_continuum():
-            logger.debug(f"Invalidated cached continuum for user {user_id}")
+
+        # Get thread context from contextvars
+        from utils.user_context import get_current_user
+        user_context = get_current_user()
+        thread_context = user_context.get('google_chat_thread_key') if user_context else None
+
+        if self.valkey_cache.invalidate_continuum(thread_context):
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.debug(f"Invalidated cached continuum for user {user_id}, {thread_desc}")
         else:
-            logger.debug(f"No cached continuum to invalidate for user {user_id}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.debug(f"No cached continuum to invalidate for user {user_id}, {thread_desc}")
     
     def update_cache(self, user_id: str, messages: List[Message]) -> None:
         """
-        Update continuum cache in Valkey.
+        Update continuum cache in Valkey, using thread context from ambient context.
 
         Called when messages are added or modified.
 
@@ -233,8 +263,14 @@ class ContinuumPool:
             user_id: User identifier
             messages: Updated message list
         """
-        self.valkey_cache.set_continuum(messages)
-        logger.debug(f"Updated continuum cache for user {user_id}")
+        # Get thread context from contextvars
+        from utils.user_context import get_current_user
+        user_context = get_current_user()
+        thread_context = user_context.get('google_chat_thread_key') if user_context else None
+
+        self.valkey_cache.set_continuum(messages, thread_context)
+        thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+        logger.debug(f"Updated continuum cache for user {user_id}, {thread_desc}")
 
     def get_session_info(self, user_id: str) -> Dict[str, Any]:
         """

@@ -45,9 +45,23 @@ class ValkeyMessageCache:
 
         logger.info("ValkeyMessageCache initialized (event-driven invalidation)")
     
-    def _get_key(self, user_id: str) -> str:
-        """Generate cache key for user continuum messages."""
-        return f"{self.key_prefix}:{user_id}:messages"
+    def _get_key(self, user_id: str, thread_context: Optional[str] = None) -> str:
+        """
+        Generate cache key for continuum messages.
+
+        Args:
+            user_id: User ID
+            thread_context: Optional thread identifier (e.g., Google Chat thread key)
+
+        Returns:
+            Cache key string: continuum:user_id:thread_context:messages or continuum:user_id:messages
+        """
+        if thread_context:
+            # Thread-scoped: continuum:user_id:thread_context:messages
+            return f"{self.key_prefix}:{user_id}:{thread_context}:messages"
+        else:
+            # Default (non-threaded): continuum:user_id:messages
+            return f"{self.key_prefix}:{user_id}:messages"
 
     def _serialize_messages(self, messages: List[Message]) -> str:
         """
@@ -102,40 +116,50 @@ class ValkeyMessageCache:
         
         return messages
     
-    def get_continuum(self) -> Optional[List[Message]]:
+    def get_continuum(self, thread_context: Optional[str] = None) -> Optional[List[Message]]:
         """
-        Get continuum messages from Valkey cache.
+        Get continuum messages from Valkey cache, optionally scoped to thread.
+
+        Args:
+            thread_context: Optional thread identifier (e.g., Google Chat thread key)
+
+        Returns:
+            List of cached messages, or None if cache miss
 
         Cache miss indicates a new session (invalidated by segment timeout).
 
         Requires: Active user context (set via set_current_user_id during authentication)
 
-        Returns:
-            List of messages if cached, None if not found in cache
-
         Raises:
             ValkeyError: If Valkey infrastructure is unavailable
             RuntimeError: If no user context is set
         """
         user_id = get_current_user_id()
-        key = self._get_key(user_id)
+        key = self._get_key(user_id, thread_context)
         data = self.valkey.get(key)
 
         if data:
-            logger.debug(f"Found cached continuum for user {user_id}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.debug(f"Found cached continuum for user {user_id}, {thread_desc}")
             return self._deserialize_messages(data)
         else:
-            logger.debug(f"No cached continuum found for user {user_id}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.debug(f"No cached continuum found for user {user_id}, {thread_desc}")
             return None
 
-    def set_continuum(self, messages: List[Message]) -> None:
+    def set_continuum(
+        self,
+        messages: List[Message],
+        thread_context: Optional[str] = None
+    ) -> None:
         """
-        Store continuum messages in Valkey.
+        Store continuum messages in Valkey, optionally scoped to thread.
 
         Cache remains until explicitly invalidated by segment timeout handler.
 
         Args:
             messages: List of messages to cache
+            thread_context: Optional thread identifier (e.g., Google Chat thread key)
 
         Requires: Active user context (set via set_current_user_id during authentication)
 
@@ -144,17 +168,21 @@ class ValkeyMessageCache:
             RuntimeError: If no user context is set
         """
         user_id = get_current_user_id()
-        key = self._get_key(user_id)
+        key = self._get_key(user_id, thread_context)
         data = self._serialize_messages(messages)
 
         # Set without expiration - invalidation is event-driven
         self.valkey.set(key, data)
 
-        logger.debug(f"Cached continuum for user {user_id}")
+        thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+        logger.debug(f"Cached continuum for user {user_id}, {thread_desc}")
 
-    def invalidate_continuum(self) -> bool:
+    def invalidate_continuum(self, thread_context: Optional[str] = None) -> bool:
         """
-        Invalidate continuum cache entry.
+        Invalidate continuum cache entry, optionally scoped to thread.
+
+        Args:
+            thread_context: Optional thread identifier (e.g., Google Chat thread key)
 
         Requires: Active user context (set via set_current_user_id during authentication)
 
@@ -166,11 +194,12 @@ class ValkeyMessageCache:
             RuntimeError: If no user context is set
         """
         user_id = get_current_user_id()
-        messages_key = self._get_key(user_id)
+        messages_key = self._get_key(user_id, thread_context)
 
         messages_result = self.valkey.delete(messages_key)
 
         if messages_result:
-            logger.debug(f"Invalidated cached continuum for user {user_id}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.debug(f"Invalidated cached continuum for user {user_id}, {thread_desc}")
 
         return bool(messages_result)

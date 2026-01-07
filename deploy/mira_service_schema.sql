@@ -273,13 +273,16 @@ COMMENT ON COLUMN domain_knowledge_block_content.letta_block_id IS 'External Let
 
 CREATE TABLE IF NOT EXISTS continuums (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    thread_context VARCHAR(255),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, COALESCE(thread_context, ''))
 );
 
-COMMENT ON TABLE continuums IS 'Continuous timeline of user interactions (one per user, replaces discrete conversations)';
+COMMENT ON TABLE continuums IS 'Continuous timeline of user interactions (one per user+thread, supports per-thread conversations)';
+COMMENT ON COLUMN continuums.thread_context IS 'Optional thread identifier (e.g., Google Chat thread key). NULL means default continuum for non-threaded contexts';
 COMMENT ON COLUMN continuums.metadata IS 'Flexible storage for continuum-level configuration and state';
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -302,6 +305,16 @@ ALTER TABLE messages ALTER COLUMN content SET COMPRESSION lz4;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS segment_embedding vector(768);
 
 COMMENT ON COLUMN messages.segment_embedding IS 'mdbr-leaf-ir-asym embedding (768-dim) for segment boundary sentinels (used for segment search)';
+
+-- =====================================================================
+-- CONTINUUM INDEXES
+-- =====================================================================
+
+-- Thread context index for thread-aware continuum lookups
+-- Partial index: only for non-NULL thread_context values
+CREATE INDEX IF NOT EXISTS idx_continuums_thread_context
+  ON continuums(thread_context)
+  WHERE thread_context IS NOT NULL;
 
 -- =====================================================================
 -- MESSAGE INDEXES

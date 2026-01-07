@@ -58,87 +58,117 @@ class ContinuumRepository:
             self._db_cache[user_id] = PostgresClient("mira_service", user_id=user_id)
         return self._db_cache[user_id]
     
-    def get_continuum(self, user_id: str) -> Optional[Continuum]:
+    def get_continuum(
+        self,
+        user_id: str,
+        thread_context: Optional[str] = None
+    ) -> Optional[Continuum]:
         """
-        Get most recent continuum for user.
-        
+        Get most recent continuum for user, optionally scoped to thread.
+
         Args:
             user_id: User identifier
-            
+            thread_context: Optional thread identifier (e.g., Google Chat thread key).
+                          None means default continuum for non-threaded contexts.
+
         Returns:
-            Most recent continuum or None if no continuums exist
+            Most recent continuum matching user_id and thread_context, or None if no continuums exist
         """
         try:
             db = self._get_client(user_id)
-            
-            # Get most recent continuum
-            existing = db.execute_query(
-                "SELECT * FROM continuums ORDER BY created_at DESC LIMIT 1"
-            )
-            
+
+            # Get most recent continuum with thread_context filter
+            if thread_context:
+                query = """
+                    SELECT * FROM continuums
+                    WHERE user_id = %s AND thread_context = %s
+                    ORDER BY created_at DESC LIMIT 1
+                """
+                params = (user_id, thread_context)
+            else:
+                query = """
+                    SELECT * FROM continuums
+                    WHERE user_id = %s AND thread_context IS NULL
+                    ORDER BY created_at DESC LIMIT 1
+                """
+                params = (user_id,)
+
+            existing = db.execute_query(query, params)
+
             if not existing:
                 return None
-                
+
             row = existing[0]
             # Parse JSON metadata if it's a string (asyncpg doesn't auto-parse)
             metadata = row.get('metadata', {})
             if isinstance(metadata, str):
                 metadata = json.loads(metadata) if metadata else {}
-            
+
             # Convert asyncpg UUID to standard UUID
             from uuid import UUID
             continuum_id = UUID(str(row['id'])) if not isinstance(row['id'], UUID) else row['id']
-            
+
             state = ContinuumState(
                 id=continuum_id,
                 user_id=row['user_id'],
                 metadata=metadata
             )
-            
+
             # Create continuum
             continuum = Continuum(state)
-            
-            logger.debug(f"Retrieved existing continuum {continuum.id} for user {user_id}")
+
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default (no thread)"
+            logger.debug(f"Retrieved existing continuum {continuum.id} for user {user_id}, {thread_desc}")
             return continuum
         except Exception as e:
-            logger.error(f"Failed to get continuum for user {user_id}: {str(e)}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.error(f"Failed to get continuum for user {user_id}, {thread_desc}: {str(e)}")
             raise RuntimeError(f"Database operation failed: {str(e)}") from e
     
-    def create_continuum(self, user_id: str) -> Continuum:
+    def create_continuum(
+        self,
+        user_id: str,
+        thread_context: Optional[str] = None
+    ) -> Continuum:
         """
-        Create new continuum for user.
-        
+        Create new continuum for user, optionally scoped to thread.
+
         Args:
             user_id: User identifier
-            
+            thread_context: Optional thread identifier (e.g., Google Chat thread key).
+                          None means default continuum for non-threaded contexts.
+
         Returns:
             New continuum instance
         """
         try:
             # Create new continuum
             continuum = Continuum.create_new(user_id)
-            
+
             # Persist to database
             now = utc_now()
             db = self._get_client(user_id)
             db.execute_query(
                 """
-                INSERT INTO continuums (id, user_id, created_at, updated_at, metadata)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO continuums (id, user_id, thread_context, created_at, updated_at, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     continuum.id,  # Keep as UUID - PostgresClient will convert
                     user_id,
+                    thread_context,
                     now,
                     now,
                     json.dumps(continuum._state.metadata)
                 )
             )
 
-            logger.info(f"Created new continuum {continuum.id} for user {user_id}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default (no thread)"
+            logger.info(f"Created new continuum {continuum.id} for user {user_id}, {thread_desc}")
             return continuum
         except Exception as e:
-            logger.error(f"Failed to create continuum for user {user_id}: {str(e)}")
+            thread_desc = f"thread '{thread_context}'" if thread_context else "default"
+            logger.error(f"Failed to create continuum for user {user_id}, {thread_desc}: {str(e)}")
             raise RuntimeError(f"Database operation failed: {str(e)}") from e
     
     def get_by_id(self, continuum_id: str, user_id: str) -> Optional[Continuum]:

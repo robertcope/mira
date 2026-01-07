@@ -62,11 +62,11 @@ def ensure_single_user(app: FastAPI) -> None:
                 VALUES (%(id)s, %(email)s, true, true)
             """, {'id': user_id, 'email': default_email})
 
-            # Create the continuum (normally done during signup flow)
+            # Create the default continuum (thread_context=NULL for non-threaded contexts)
             continuum_id = str(uuid.uuid4())
             session.execute_update("""
-                INSERT INTO continuums (id, user_id, metadata, created_at, updated_at)
-                VALUES (%(id)s, %(user_id)s, '{}'::jsonb, NOW(), NOW())
+                INSERT INTO continuums (id, user_id, thread_context, metadata, created_at, updated_at)
+                VALUES (%(id)s, %(user_id)s, NULL, '{}'::jsonb, NOW(), NOW())
             """, {'id': continuum_id, 'user_id': user_id})
 
             # Prepopulate with starter messages (ported from auth.database.prepopulate_new_user)

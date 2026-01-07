@@ -68,12 +68,39 @@ class ManifestQueryService:
         Args:
             event: ManifestUpdatedEvent with user_id
         """
-        cache_key = f"manifest_segments:{event.user_id}"
+        cache_key = self._get_cache_key(event.user_id)
         try:
             self.valkey.delete(cache_key)
-            logger.debug(f"Invalidated manifest cache for user {event.user_id}")
+            thread_desc = self._get_thread_desc()
+            logger.debug(f"Invalidated manifest cache for user {event.user_id}, {thread_desc}")
         except Exception as e:
             logger.warning(f"Failed to invalidate manifest cache: {e}")
+
+    def _get_cache_key(self, user_id: str) -> str:
+        """
+        Generate cache key for manifest, scoped to thread if available.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Cache key string
+        """
+        from utils.user_context import get_current_user
+        user_context = get_current_user()
+        thread_context = user_context.get('google_chat_thread_key') if user_context else None
+
+        if thread_context:
+            return f"manifest_segments:{user_id}:{thread_context}"
+        else:
+            return f"manifest_segments:{user_id}"
+
+    def _get_thread_desc(self) -> str:
+        """Get thread description for logging."""
+        from utils.user_context import get_current_user
+        user_context = get_current_user()
+        thread_context = user_context.get('google_chat_thread_key') if user_context else None
+        return f"thread '{thread_context}'" if thread_context else "default"
 
     def get_segments(self, user_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -101,12 +128,13 @@ class ManifestQueryService:
             limit = config.system.manifest_depth
 
         # Try cache first
-        cache_key = f"manifest_segments:{user_id}"
+        cache_key = self._get_cache_key(user_id)
         try:
             import json
             cached = self.valkey.get(cache_key)
             if cached:
-                logger.debug(f"Manifest cache hit for user {user_id}")
+                thread_desc = self._get_thread_desc()
+                logger.debug(f"Manifest cache hit for user {user_id}, {thread_desc}")
                 cached_str = cached.decode('utf-8') if isinstance(cached, bytes) else cached
                 return json.loads(cached_str)
         except Exception as e:
@@ -120,7 +148,8 @@ class ManifestQueryService:
             try:
                 import json
                 self.valkey.setex(cache_key, self.cache_ttl, json.dumps(segments))
-                logger.debug(f"Cached manifest segments for user {user_id} (TTL={self.cache_ttl}s)")
+                thread_desc = self._get_thread_desc()
+                logger.debug(f"Cached manifest segments for user {user_id}, {thread_desc} (TTL={self.cache_ttl}s)")
             except Exception as e:
                 logger.warning(f"Failed to cache manifest segments: {e}")
 
