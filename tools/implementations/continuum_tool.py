@@ -140,8 +140,9 @@ class ContinuumSearchTool(Tool):
         "name": "continuum_tool",
         "description": (
             "Search conversation history or long-term memories using hybrid vector+BM25 search. "
-            "For conversations: start with 'search' on summaries (default) to find relevant segments. "
-            "For memories: use search_mode='memories' to search your extracted knowledge and insights. "
+            "WORKFLOW: (1) Search summaries first (default) to find relevant segments, "
+            "(2) optionally search within specific segments using their time boundaries. "
+            "For memories: use search_mode='memories' to search extracted knowledge. "
             "Extract entities/proper nouns from queries for better matching."
         ),
         "input_schema": {
@@ -160,9 +161,9 @@ class ContinuumSearchTool(Tool):
                     "type": "string",
                     "enum": ["summaries", "messages", "memories"],
                     "description": (
-                        "Search mode for 'search' operation. 'summaries' (default) searches "
-                        "segment summaries. 'messages' requires start_time and end_time. "
-                        "'memories' searches long-term memories using hybrid vector+BM25 search."
+                        "Search mode: 'summaries' (DEFAULT, use this first) searches segment summaries. "
+                        "'messages' searches within specific timeframes (REQUIRES start_time and end_time - "
+                        "get these from summary results first). 'memories' searches long-term memories."
                     )
                 },
                 "query": {
@@ -398,8 +399,9 @@ class ContinuumSearchTool(Tool):
             if not start_time or not end_time:
                 raise ValueError(
                     "Message search requires both start_time and end_time parameters. "
-                    "Use summary search first to find relevant segments, then search within "
-                    "their time boundaries."
+                    "CORRECT APPROACH: Don't specify search_mode (defaults to 'summaries') to search "
+                    "segment summaries first. Those results include time boundaries you can use for "
+                    "follow-up message searches if needed."
                 )
             return self._search_messages_in_timeframe(
                 query=query,

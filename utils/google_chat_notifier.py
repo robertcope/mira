@@ -154,7 +154,7 @@ class GoogleChatNotifier:
 
         if status == 'success':
             summary = context.get('summary', {})
-            findings_count = len(summary.get('findings', []))
+            findings_count = len(summary.get('key_findings', []))
             return f"✓ Search complete: \"{query}\" - Found {findings_count} relevant items"
 
         elif status == 'timeout':

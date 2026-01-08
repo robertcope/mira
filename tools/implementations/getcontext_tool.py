@@ -630,6 +630,8 @@ class GetContextTool(Tool):
             final_summary['iterations'] = iteration
             final_summary['search_mode'] = search_mode
             final_summary['task_id'] = task_id
+            # Ensure query is always present even if LLM omits it
+            final_summary['query'] = query
 
             self.logger.info(f"Context search {task_id[:8]} complete with {len(agent.scratchpad)} findings")
 
@@ -724,6 +726,7 @@ class GetContextTool(Tool):
             context={
                 'task_id': task_id,
                 'status': 'success',
+                'query': summary.get('query', 'Unknown query'),  # Extract query for notifications
                 'summary': summary
             }
         ))
