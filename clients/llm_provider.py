@@ -189,8 +189,7 @@ class GenericProviderClient:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "tool_choice": "none"  # Disable tool calling for generic client
+            "max_tokens": self.max_tokens
         }
 
         response = requests.post(

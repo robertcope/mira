@@ -472,15 +472,15 @@ class WeatherTool(Tool):
 
     anthropic_schema = {
         "name": "weather_tool",
-        "description": "Retrieves weather forecast data and calculates heat stress indices. Provide EITHER a location name (like 'Houston, TX') OR coordinates (latitude+longitude), never both. Operations: 'get_forecast' for weather data, 'get_heat_stress' for WBGT calculations.",
+        "description": "Retrieves weather forecast data and calculates heat stress indices. Provide EITHER a location name (like 'Houston, TX') OR coordinates (latitude+longitude), never both. Valid operations: 'get_forecast' (or 'get_weather_forecast'), 'get_heat_stress'.",
         "input_schema": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["get_forecast", "get_heat_stress"],
+                        "enum": ["get_forecast", "get_weather_forecast", "get_heat_stress"],
                         "default": "get_forecast",
-                        "description": "Use 'get_forecast' for weather forecasts (temperature, precipitation, wind, etc.) or 'get_heat_stress' for heat stress/WBGT calculations. Defaults to 'get_forecast'."
+                        "description": "Operation to perform: 'get_forecast' or 'get_weather_forecast' for weather forecasts (temperature, precipitation, wind, etc.), 'get_heat_stress' for heat stress/WBGT calculations. Defaults to 'get_forecast'."
                     },
                     "latitude": {
                         "type": "number",
@@ -728,18 +728,22 @@ class WeatherTool(Tool):
             ValueError: If parameters are invalid or the operation fails
         """
         self.logger.info(f"Running weather tool with operation: {operation}")
-        
+
         try:
             # Import config inside the method to avoid circular imports
             from config import config
-            
+
+            # Normalize operation aliases
+            if operation == "get_weather_forecast":
+                operation = "get_forecast"
+
             # Validate and resolve coordinates
             lat, lon = self._resolve_coordinates(latitude, longitude, location)
             forecast_type = ValidationUtils.validate_forecast_type(forecast_type)
             validated_forecast_days = ValidationUtils.validate_forecast_days(forecast_days)
             validated_date = ValidationUtils.validate_date(date)
             validated_params = ValidationUtils.validate_parameters(weather_parameters)
-            
+
             # Execute appropriate operation
             if operation == "get_forecast":
                 result = self._get_forecast(
