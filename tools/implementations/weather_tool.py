@@ -893,7 +893,73 @@ class WeatherTool(Tool):
             raise ConnectionError(f"Failed to fetch weather data: {str(e)}")
         except (ValueError, KeyError) as e:
             raise RuntimeError(f"Invalid response from weather API: {str(e)}")
-    
+
+    def _generate_temporal_context(self, times: List[str], api_timezone: str) -> str:
+        """
+        Generate temporal context showing what dates are included in the forecast.
+
+        Args:
+            times: List of ISO timestamp strings from the forecast
+            api_timezone: Timezone from the API response
+
+        Returns:
+            Human-readable string showing forecast date range with days from now
+        """
+        if not times:
+            return "Forecast data unavailable"
+
+        try:
+            # Parse first and last timestamps
+            first_time = parse_utc_time_string(times[0]) if 'T' in times[0] else ensure_utc(parse_time_string(times[0], api_timezone))
+            last_time = parse_utc_time_string(times[-1]) if 'T' in times[-1] else ensure_utc(parse_time_string(times[-1], api_timezone))
+
+            # Get user's current time
+            from utils.user_context import get_user_preferences
+            user_tz = get_user_preferences().timezone
+            current_time = utc_now()
+            current_local = convert_from_utc(current_time, user_tz)
+
+            # Convert forecast times to user's timezone
+            first_local = convert_from_utc(first_time, user_tz)
+            last_local = convert_from_utc(last_time, user_tz)
+
+            # Calculate days from now
+            current_date = current_local.date()
+            first_date = first_local.date()
+            last_date = last_local.date()
+
+            days_to_first = (first_date - current_date).days
+            days_to_last = (last_date - current_date).days
+
+            # Format day names
+            first_day_name = first_local.strftime('%A')
+            last_day_name = last_local.strftime('%A')
+
+            # Build temporal context string
+            if days_to_first == 0:
+                first_str = "today"
+            elif days_to_first == 1:
+                first_str = f"tomorrow ({first_day_name})"
+            else:
+                first_str = f"{first_day_name} ({'+' if days_to_first > 0 else ''}{days_to_first} days)"
+
+            if days_to_last == 0:
+                last_str = "today"
+            elif days_to_last == 1:
+                last_str = f"tomorrow ({last_day_name})"
+            else:
+                last_str = f"{last_day_name} ({'+' if days_to_last > 0 else ''}{days_to_last} days)"
+
+            # Format dates
+            first_date_str = first_local.strftime('%B %d, %Y')
+            last_date_str = last_local.strftime('%B %d, %Y')
+
+            return f"Forecast covers {first_str} ({first_date_str}) through {last_str} ({last_date_str})"
+
+        except (ValueError, AttributeError) as e:
+            self.logger.warning(f"Failed to generate temporal context: {e}")
+            return "Forecast temporal context unavailable"
+
     def _get_forecast(
         self,
         latitude: float,
@@ -956,8 +1022,12 @@ class WeatherTool(Tool):
             if processed_times:
                 forecast_data["time"] = processed_times
         
+        # Generate temporal context for the forecast
+        temporal_context = self._generate_temporal_context(forecast_data.get("time", []), api_timezone)
+
         # Return formatted response
         return {
+            "temporal_reference": temporal_context,
             "location": {
                 "latitude": weather_data.get("latitude", latitude),
                 "longitude": weather_data.get("longitude", longitude),
@@ -968,7 +1038,7 @@ class WeatherTool(Tool):
             "forecast": {
                 # Include units if available
                 f"{forecast_type}_units": weather_data.get(f"{forecast_type}_units", {}),
-                
+
                 # Include processed forecast data
                 forecast_type: forecast_data
             }
@@ -1091,9 +1161,13 @@ class WeatherTool(Tool):
         # Add WBGT unit to units
         hourly_units = weather_data.get("hourly_units", {})
         hourly_units["wbgt"] = "°C"
-        
+
+        # Generate temporal context for the forecast
+        temporal_context = self._generate_temporal_context(processed_times, api_timezone)
+
         # Return formatted response
         return {
+            "temporal_reference": temporal_context,
             "location": {
                 "latitude": weather_data.get("latitude", latitude),
                 "longitude": weather_data.get("longitude", longitude),
