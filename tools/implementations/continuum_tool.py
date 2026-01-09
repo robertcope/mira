@@ -169,7 +169,7 @@ class ContinuumSearchTool(Tool):
                 "query": {
                     "type": "string",
                     "description": (
-                        "Natural language search query. Required for 'search' operation. "
+                        "Natural language search query. Required for 'search' and 'search_within_segment' operations. "
                         "Example: 'Mark and his XFS system', 'database migration discussion'"
                     )
                 },

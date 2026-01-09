@@ -142,23 +142,25 @@ class GenericProviderClient:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Optional[str],
         model: str,
         api_endpoint: str,
         temperature: float = 0.1,
         max_tokens: int = 1000,
-        timeout: int = 60
+        timeout: int = 60,
+        tool_choice: Optional[str] = None
     ):
         """
         Initialize generic provider client.
 
         Args:
-            api_key: API key for authentication
+            api_key: API key for authentication (None for local providers like Ollama)
             model: Model identifier
             api_endpoint: Full URL for chat completions endpoint
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             timeout: Request timeout in seconds
+            tool_choice: Force tool choice behavior ("none" to disable tool calls)
         """
         self.api_key = api_key
         self.model = model
@@ -166,6 +168,7 @@ class GenericProviderClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.tool_choice = tool_choice
 
     def generate_response(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """
@@ -181,9 +184,12 @@ class GenericProviderClient:
             requests.HTTPError: If request fails
         """
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+
+        # Only add Authorization if API key is provided (local providers like Ollama don't need it)
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         payload = {
             "model": self.model,
@@ -191,6 +197,10 @@ class GenericProviderClient:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens
         }
+
+        # Add tool_choice if specified (prevents unwanted tool calls)
+        if self.tool_choice:
+            payload["tool_choice"] = self.tool_choice
 
         response = requests.post(
             self.endpoint,

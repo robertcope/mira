@@ -130,6 +130,7 @@ Be systematic and thorough."""
             api_endpoint=self.config.llm_endpoint,
             temperature=0.3,
             max_tokens=1000
+            # Don't set tool_choice - we're not providing tools, so tool_choice="none" is invalid
         )
 
     def _safe_parse_json(self, content: str, fallback: Any = None) -> Any:

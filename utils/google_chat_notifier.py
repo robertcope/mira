@@ -22,7 +22,9 @@ class GoogleChatNotifier:
 
     Handles:
     - Due reminder notifications (periodic check)
-    - Background search completion notifications (event-driven)
+
+    Note: Search completion notifications are disabled - search results go directly
+    to the LLM via GetContextTrinket in working memory.
     """
 
     def __init__(self, event_bus=None):
@@ -30,7 +32,7 @@ class GoogleChatNotifier:
         Initialize the notifier service.
 
         Args:
-            event_bus: Optional event bus for subscribing to search completion events
+            event_bus: Optional event bus (currently unused - search notifications disabled)
         """
         # Lazy imports to avoid circular dependencies
         from clients.postgres_client import PostgresClient
@@ -41,9 +43,10 @@ class GoogleChatNotifier:
         self.db = PostgresClient('mira_service')
         self.event_bus = event_bus
 
-        # Subscribe to search completion events if event bus provided
-        if self.event_bus:
-            self.event_bus.subscribe('UpdateTrinketEvent', self._handle_search_completion)
+        # NOTE: Search completion notifications are disabled - search results go directly
+        # to LLM via GetContextTrinket, so user notifications are redundant and noisy
+        # if self.event_bus:
+        #     self.event_bus.subscribe('UpdateTrinketEvent', self._handle_search_completion)
 
     def _ensure_chat_client(self):
         """Lazily initialize Google Chat client (may not be configured)."""
@@ -59,7 +62,7 @@ class GoogleChatNotifier:
         Handle UpdateTrinketEvent for search completions.
 
         Filters for GetContextTrinket updates and sends Google Chat notifications
-        for all completion statuses (success, timeout, failure).
+        only for successful searches with results.
 
         Args:
             event: UpdateTrinketEvent from the event bus
@@ -76,6 +79,19 @@ class GoogleChatNotifier:
         if status not in ('success', 'timeout', 'failed'):
             logger.debug(f"Ignoring non-completion status '{status}' for task {task_id[:8] if len(task_id) > 8 else task_id}")
             return
+
+        # Skip notifications for failed searches (too noisy, user will see error in context)
+        if status == 'failed':
+            logger.debug(f"Skipping notification for failed search {task_id[:8]}")
+            return
+
+        # Skip notifications for searches with no results (not useful)
+        if status == 'success':
+            summary = context.get('summary', {})
+            findings_count = len(summary.get('key_findings', []))
+            if findings_count == 0:
+                logger.debug(f"Skipping notification for search {task_id[:8]} with 0 results")
+                return
 
         logger.info(f"Received search completion event: task_id={task_id[:8] if len(task_id) > 8 else task_id}, status={status}")
 
