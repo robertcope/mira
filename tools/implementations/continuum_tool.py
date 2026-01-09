@@ -161,9 +161,23 @@ class ContinuumSearchTool(Tool):
                     "type": "string",
                     "enum": ["summaries", "messages", "memories"],
                     "description": (
-                        "Search mode: 'summaries' (DEFAULT, use this first) searches segment summaries. "
-                        "'messages' searches within specific timeframes (REQUIRES start_time and end_time - "
-                        "get these from summary results first). 'memories' searches long-term memories."
+                        "Search mode: 'summaries' (DEFAULT) searches segment summaries. "
+                        "'messages' searches individual messages (must provide temporal_direction + reference_time OR use search_within_segment). "
+                        "'memories' searches long-term memories."
+                    )
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": (
+                        "ISO timestamp for search start boundary. Use with search_mode='messages' for bounded search. "
+                        "Example: '2024-10-15T14:00:00Z'. Alternative: use temporal_direction instead."
+                    )
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": (
+                        "ISO timestamp for search end boundary. Use with search_mode='messages' for bounded search. "
+                        "Example: '2024-10-15T16:30:00Z'. Alternative: use temporal_direction instead."
                     )
                 },
                 "query": {
@@ -180,20 +194,6 @@ class ContinuumSearchTool(Tool):
                         "Important entities/proper nouns to boost in search. "
                         "Example: ['Mark', 'XFS'] for 'Mark's XFS system'. "
                         "Include: names, places, products, technical terms."
-                    )
-                },
-                "start_time": {
-                    "type": "string",
-                    "description": (
-                        "ISO timestamp for search start boundary. REQUIRED when search_mode='messages'. "
-                        "Get from segment summary results. Example: '2024-10-15T14:00:00Z'"
-                    )
-                },
-                "end_time": {
-                    "type": "string",
-                    "description": (
-                        "ISO timestamp for search end boundary. REQUIRED when search_mode='messages'. "
-                        "Get from segment summary results. Example: '2024-10-15T16:30:00Z'"
                     )
                 },
                 "temporal_direction": {
@@ -347,7 +347,12 @@ class ContinuumSearchTool(Tool):
                     f"Unknown operation: {operation}. "
                     f"Valid operations are: search, search_within_segment, expand_message"
                 )
+        except ValueError as e:
+            # User validation errors (wrong parameters, missing required fields) - WARNING level
+            self.logger.warning(f"Validation error in {operation}: {e}")
+            raise
         except Exception as e:
+            # Infrastructure errors (database, embeddings, etc.) - ERROR level
             self.logger.error(f"Error executing {operation} in continuum_tool: {e}")
             raise
 
@@ -364,18 +369,18 @@ class ContinuumSearchTool(Tool):
         reference_time: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Search continuum using summaries (default) or messages.
+        Search continuum using summaries (default), messages (with time bounds), or memories.
 
         Args:
             query: Natural language search query
-            search_mode: "summaries" (default) or "messages" (requires timescope)
+            search_mode: "summaries" (default), "messages", or "memories"
             entities: Optional list of entities/proper nouns to boost
             max_results: Number of results per page
             page: Page number for pagination
-            start_time: Required for search_mode="messages"
-            end_time: Required for search_mode="messages"
-            temporal_direction: "before", "after", or "around" for summary search
-            reference_time: ISO timestamp for temporal direction
+            start_time: Start boundary for message search (ISO timestamp)
+            end_time: End boundary for message search (ISO timestamp)
+            temporal_direction: "before", "after", or "around" for temporal filtering
+            reference_time: ISO timestamp anchor for temporal_direction
 
         Returns:
             Dict containing search results with confidence score
@@ -394,15 +399,48 @@ class ContinuumSearchTool(Tool):
         if search_mode not in ["summaries", "messages", "memories"]:
             raise ValueError(f"search_mode must be 'summaries', 'messages', or 'memories', got: {search_mode}")
 
-        # Message mode requires timescope
+        # Message mode requires time boundaries (explicit times OR temporal filter)
         if search_mode == "messages":
-            if not start_time or not end_time:
+            has_explicit_bounds = start_time and end_time
+            has_temporal_filter = temporal_direction and reference_time
+
+            if not has_explicit_bounds and not has_temporal_filter:
                 raise ValueError(
-                    "Message search requires both start_time and end_time parameters. "
-                    "CORRECT APPROACH: Don't specify search_mode (defaults to 'summaries') to search "
-                    "segment summaries first. Those results include time boundaries you can use for "
-                    "follow-up message searches if needed."
+                    "Message search requires time boundaries to prevent searching entire history. "
+                    "Provide EITHER: (1) start_time + end_time for explicit range, "
+                    "OR (2) temporal_direction + reference_time for relative search. "
+                    "TIP: Search summaries first (search_mode='summaries') to find relevant time periods, "
+                    "then drill into messages using those time boundaries."
                 )
+
+            # If using temporal filter, convert to explicit bounds
+            if has_temporal_filter and not has_explicit_bounds:
+                from utils.timezone_utils import parse_utc_time_string, format_utc_iso
+                from datetime import timedelta
+
+                # Type checker: reference_time is guaranteed non-None by has_temporal_filter check
+                assert reference_time is not None
+                assert temporal_direction is not None
+
+                ref_time = parse_utc_time_string(reference_time)
+
+                if temporal_direction == "before":
+                    # Last 7 days before reference
+                    start_time = format_utc_iso(ref_time - timedelta(days=7))
+                    end_time = reference_time
+                elif temporal_direction == "after":
+                    # Next 7 days after reference
+                    start_time = reference_time
+                    end_time = format_utc_iso(ref_time + timedelta(days=7))
+                elif temporal_direction == "around":
+                    # ± 3 days around reference
+                    start_time = format_utc_iso(ref_time - timedelta(days=3))
+                    end_time = format_utc_iso(ref_time + timedelta(days=3))
+
+            # Type checker: start_time and end_time are guaranteed non-None by validation above
+            assert start_time is not None
+            assert end_time is not None
+
             return self._search_messages_in_timeframe(
                 query=query,
                 start_time=start_time,

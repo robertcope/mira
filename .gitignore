@@ -23,6 +23,7 @@ vault_data/
 
 # Persistent and generated data
 data/users/
+data/llm_logs/
 *.log
 
 # Backup/deprecated files

@@ -67,6 +67,7 @@ from cns.core.stream_events import (
     CircuitBreakerEvent, RetryEvent
 )
 from tools.repo import ANTHROPIC_BETA_FLAGS
+from utils.llm_logger import get_llm_logger
 
 
 class ContextOverflowError(Exception):
@@ -305,6 +306,13 @@ class LLMProvider:
         # Check for firehose mode (env var: MIRA_FIREHOSE=1)
         self.firehose_enabled = bool(os.environ.get('MIRA_FIREHOSE'))
 
+        # Initialize LLM logger (configured via utils.llm_logger_config)
+        from utils.llm_logger_config import is_llm_logging_enabled
+        self.llm_logger_enabled = is_llm_logging_enabled()
+        if self.llm_logger_enabled:
+            self.llm_logger = get_llm_logger()
+            self.logger.info("LLM request/response logging enabled")
+
         self.logger.info(f"LLM Provider initialized with Anthropic SDK")
         self.logger.info(f"Model: {self.model}")
         if self.tool_repo:
@@ -434,6 +442,42 @@ class LLMProvider:
             else:
                 stripped.append(msg)
         return stripped
+
+    def _get_current_user_id(self) -> Optional[str]:
+        """Get current user_id from context if available."""
+        try:
+            from utils.user_context import _user_context
+            user_id = _user_context.get(None)
+            return str(user_id) if user_id else None
+        except Exception:
+            return None
+
+    def _response_to_dict(self, response: Any) -> Dict[str, Any]:
+        """Convert response object to dictionary for logging."""
+        try:
+            # Handle Anthropic Message objects
+            if hasattr(response, 'model_dump'):
+                return response.model_dump()
+            elif hasattr(response, '__dict__'):
+                # Handle GenericOpenAIResponse and other objects with __dict__
+                result = {}
+                for key, value in response.__dict__.items():
+                    if key.startswith('_'):
+                        continue
+                    # Handle nested objects
+                    if hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool)):
+                        if hasattr(value, 'model_dump'):
+                            result[key] = value.model_dump()
+                        else:
+                            result[key] = str(value)
+                    else:
+                        result[key] = value
+                return result
+            else:
+                return {"raw": str(response)}
+        except Exception as e:
+            self.logger.debug(f"Failed to convert response to dict: {e}")
+            return {"error": "Failed to serialize response", "type": str(type(response))}
 
     def _write_firehose(
         self,
@@ -667,6 +711,23 @@ class LLMProvider:
                         model_override=model_override
                     )
 
+                    # Log request if LLM logging enabled
+                    correlation_id = None
+                    if self.llm_logger_enabled:
+                        correlation_id = self.llm_logger.log_request(
+                            provider="generic",
+                            model=model_override or self.model,
+                            system_prompt=system_prompt,
+                            messages=prepared_messages,
+                            tools=generic_tools,
+                            max_tokens=self.max_tokens,
+                            temperature=temperature,
+                            user_id=self._get_current_user_id(),
+                            endpoint=endpoint_url,
+                            thinking_enabled=use_thinking,
+                            thinking_budget=thinking_budget
+                        )
+
                     # Stream response with real-time event emission
                     accumulated_text = ""
                     accumulated_tool_calls = {}  # {index: {"id": ..., "name": ..., "arguments": ""}}
@@ -787,6 +848,13 @@ class LLMProvider:
 
                     if not tool_blocks:
                         # No tools = done, emit final response
+                        # Log response if LLM logging enabled
+                        if self.llm_logger_enabled and correlation_id:
+                            self.llm_logger.log_response(
+                                correlation_id=correlation_id,
+                                response_data=self._response_to_dict(response),
+                                user_id=self._get_current_user_id()
+                            )
                         yield CompleteEvent(response=response)
                         return
 
@@ -827,13 +895,19 @@ class LLMProvider:
                                     result=result_str
                                 )
                             except Exception as e:
-                                self.logger.error(f"Tool execution failed for {block.name}: {e}")
-                                # Include schema for parameter validation errors to help model correct itself
-                                schema_hint = ""
+                                # Detect parameter validation errors (user's fault - WARNING level)
                                 error_str = str(e).lower()
                                 is_param_error = isinstance(e, ValueError) or any(
                                     kw in error_str for kw in ["unknown operation", "invalid", "required", "missing", "parameter"]
                                 )
+
+                                if is_param_error:
+                                    self.logger.warning(f"Tool parameter validation failed for {block.name}: {e}")
+                                else:
+                                    self.logger.error(f"Tool execution failed for {block.name}: {e}")
+
+                                # Include schema for parameter validation errors to help model correct itself
+                                schema_hint = ""
                                 if is_param_error and self.tool_repo:
                                     schema = self.tool_repo.get_tool_definition(block.name)
                                     if schema:
@@ -994,9 +1068,26 @@ class LLMProvider:
                     model_override=model_override
                 )
 
+                # Log request if LLM logging enabled
+                correlation_id = None
+                if self.llm_logger_enabled:
+                    correlation_id = self.llm_logger.log_request(
+                        provider="generic",
+                        model=model_override or self.model,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        tools=generic_tools,
+                        max_tokens=self.max_tokens,
+                        temperature=temperature,
+                        user_id=self._get_current_user_id(),
+                        endpoint=endpoint_url,
+                        thinking_enabled=use_thinking,
+                        thinking_budget=thinking_budget
+                    )
+
                 # Call generic client - handle tool validation errors with auto-load
                 try:
-                    return generic_client.messages.create(
+                    response = generic_client.messages.create(
                         messages=messages,
                         system=system_prompt,
                         tools=generic_tools,
@@ -1005,6 +1096,16 @@ class LLMProvider:
                         thinking_enabled=use_thinking,
                         thinking_budget=thinking_budget
                     )
+
+                    # Log response if LLM logging enabled
+                    if self.llm_logger_enabled and correlation_id:
+                        self.llm_logger.log_response(
+                            correlation_id=correlation_id,
+                            response_data=self._response_to_dict(response),
+                            user_id=self._get_current_user_id()
+                        )
+
+                    return response
                 except ToolNotLoadedError as e:
                     # Model tried to use a tool that isn't in the request
                     # Return synthetic response with invokeother_tool call
@@ -1138,11 +1239,36 @@ class LLMProvider:
             # Write to firehose before Anthropic API call
             self._write_firehose(system_prompt, anthropic_messages, anthropic_tools, provider="anthropic")
 
+            # Log request if LLM logging enabled
+            correlation_id = None
+            if self.llm_logger_enabled:
+                correlation_id = self.llm_logger.log_request(
+                    provider="anthropic",
+                    model=selected_model,
+                    system_prompt=system_param or system_prompt,
+                    messages=messages_to_send,
+                    tools=anthropic_tools,
+                    max_tokens=max_tokens,
+                    temperature=self.temperature,
+                    user_id=self._get_current_user_id(),
+                    thinking_enabled=use_thinking,
+                    thinking_budget=thinking_budget if use_thinking else None,
+                    container_id=container_id
+                )
+
             # Use beta API for code execution and Files API
             message = self.anthropic_client.beta.messages.create(
                 **api_params,
                 betas=ANTHROPIC_BETA_FLAGS
             )
+
+            # Log response if LLM logging enabled
+            if self.llm_logger_enabled and correlation_id:
+                self.llm_logger.log_response(
+                    correlation_id=correlation_id,
+                    response_data=self._response_to_dict(message),
+                    user_id=self._get_current_user_id()
+                )
 
             # Capture container ID from response for reuse
             if hasattr(message, 'container') and message.container:
@@ -1310,6 +1436,24 @@ class LLMProvider:
                 stream_params["container"] = container_id
                 self.logger.debug(f"Reusing container: {container_id}")
 
+            # Log request if LLM logging enabled
+            correlation_id = None
+            if self.llm_logger_enabled:
+                correlation_id = self.llm_logger.log_request(
+                    provider="anthropic",
+                    model=selected_model,
+                    system_prompt=system_param or system_prompt,
+                    messages=messages_to_send,
+                    tools=anthropic_tools,
+                    max_tokens=max_tokens,
+                    temperature=self.temperature,
+                    user_id=self._get_current_user_id(),
+                    thinking_enabled=use_thinking,
+                    thinking_budget=thinking_budget if use_thinking else None,
+                    container_id=container_id,
+                    streaming=True
+                )
+
             # Use beta API for code execution and Files API
             with self.anthropic_client.beta.messages.stream(
                 **stream_params,
@@ -1360,6 +1504,14 @@ class LLMProvider:
                         f"Model: {selected_model} - Token usage - Input: {usage.input_tokens}, Output: {usage.output_tokens}, "
                         f"Cache created: {getattr(usage, 'cache_creation_input_tokens', 0)}, "
                         f"Cache read: {getattr(usage, 'cache_read_input_tokens', 0)}"
+                    )
+
+                # Log response if LLM logging enabled
+                if self.llm_logger_enabled and correlation_id:
+                    self.llm_logger.log_response(
+                        correlation_id=correlation_id,
+                        response_data=self._response_to_dict(final_message),
+                        user_id=self._get_current_user_id()
                     )
 
                 yield CompleteEvent(response=final_message)
@@ -1479,13 +1631,19 @@ class LLMProvider:
                         )
 
                     except Exception as e:
-                        self.logger.error(f"Tool execution failed for {tool_name}: {e}")
-                        # Include schema for parameter validation errors to help model correct itself
-                        schema_hint = ""
+                        # Detect parameter validation errors (user's fault - WARNING level)
                         error_str = str(e).lower()
                         is_param_error = isinstance(e, ValueError) or any(
                             kw in error_str for kw in ["unknown operation", "invalid", "required", "missing", "parameter"]
                         )
+
+                        if is_param_error:
+                            self.logger.warning(f"Tool parameter validation failed for {tool_name}: {e}")
+                        else:
+                            self.logger.error(f"Tool execution failed for {tool_name}: {e}")
+
+                        # Include schema for parameter validation errors to help model correct itself
+                        schema_hint = ""
                         if is_param_error and self.tool_repo:
                             schema = self.tool_repo.get_tool_definition(tool_name)
                             if schema:
