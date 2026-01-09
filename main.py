@@ -241,6 +241,15 @@ async def lifespan(app: FastAPI):
     initialize_orchestrator(orchestrator)
     logger.info("CNS Orchastrator initialized as global singleton")
 
+    # Initialize real-time memory extraction handler
+    # This subscribes to TurnCompletedEvent for immediate memory extraction
+    try:
+        lt_memory_factory.init_realtime_extraction(orchestrator.event_bus)
+        logger.info("Real-time memory extraction handler initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize real-time extraction handler: {e}")
+        logger.warning("Memories will only be extracted during segment collapse (60min delay)")
+
     # Flush Valkey caches on startup except auth sessions and rate limiting
     logger.info("Flushing Valkey caches (preserving sessions and rate limits)...")
     from clients.valkey_client import get_valkey_client

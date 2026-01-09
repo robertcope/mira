@@ -57,8 +57,9 @@ class SegmentCacheLoader:
         # Uses complexity-based selection for optimal information density
         segment_summaries = self._load_segment_summaries(continuum_id)
 
-        # Step 2: Load continuity messages (last 5 turns before active sentinel)
-        continuity_messages = self._load_continuity_messages(continuum_id, turn_count=5)
+        # Step 2: Load continuity messages (last 10 turns before active sentinel)
+        # Increased from 5 to provide better short-term recall for recent discussions
+        continuity_messages = self._load_continuity_messages(continuum_id, turn_count=10)
 
         # Step 3: Create collapse marker to indicate older searchable content
         collapse_marker = create_collapse_marker()

@@ -301,6 +301,44 @@ class LTMemoryFactory:
 
         logger.debug("All LT_Memory services initialized")
 
+    def init_realtime_extraction(self, event_bus) -> 'RealtimeExtractionHandler':
+        """
+        Initialize real-time extraction handler with event bus.
+
+        This is separate from _init_services because it requires the event bus,
+        which is only available after application initialization.
+
+        Args:
+            event_bus: Event bus for subscribing to turn events
+
+        Returns:
+            Initialized RealtimeExtractionHandler
+
+        Raises:
+            RuntimeError: If initialization fails
+        """
+        try:
+            from lt_memory.realtime_extraction_handler import RealtimeExtractionHandler
+
+            logger.debug("Initializing RealtimeExtractionHandler...")
+            self.realtime_extraction = RealtimeExtractionHandler(
+                event_bus=event_bus,
+                extraction_engine=self.extraction_engine,
+                memory_processor=self.memory_processor,
+                continuum_repo=self._conversation_repo,
+                llm_provider=self._llm_provider,
+                config=self.config.extraction,
+                extraction_interval=3,  # Extract every 3 turns
+                window_size=3  # Extract from last 3 turns
+            )
+            self._service_init_order.append(self.realtime_extraction)
+
+            logger.info("RealtimeExtractionHandler initialized and subscribed to TurnCompletedEvent")
+            return self.realtime_extraction
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize RealtimeExtractionHandler: {e}") from e
+
     def cleanup(self):
         """
         Clean up all service resources.

@@ -121,14 +121,14 @@ class WebTool(Tool):
 
     anthropic_schema = {
         "name": "web_tool",
-        "description": "Access the web: (1) 'search' - find current information via search engines, (2) 'fetch' - extract content from webpages with LLM, (3) 'http' - make direct HTTP API requests. Use 'fetch' to read webpage content, 'http' for structured API calls.",
+        "description": "Web access tool with three operations controlled by the 'operation' parameter: search engines (operation='search'), webpage extraction (operation='fetch'), and HTTP requests (operation='http'). Always specify the operation parameter first.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
                     "enum": ["search", "fetch", "http"],
-                    "description": "Operation: 'search' to find info, 'fetch' to read webpage content, 'http' to call APIs"
+                    "description": "Required operation type: 'search' searches the web, 'fetch' extracts webpage content, 'http' makes API requests"
                 },
                 "query": {"type": "string", "description": "Search query (required for 'search' operation)"},
                 "max_results": {"type": "integer", "description": "Max search results (default 5, for 'search')"},
